@@ -1,0 +1,20 @@
+{
+  "name": "fiscalbox",
+  "version": "1.0.0",
+  "description": "FiscalBox — Sistema de Gestión Impositiva para Estudios Contables Argentinos",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/dev.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.12.7",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2"
+  }
+}
