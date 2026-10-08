@@ -984,12 +984,113 @@ function ClientView({client,onUpdate,onBack}){
     {!hasData&&view!=="bancos"&&<div style={{textAlign:"center",padding:"32px 20px",color:"#555",fontSize:13}}>Subí archivos de ARCA para ver la liquidación.</div>}
   </div>);}
 
+// === Vencimientos ===
+// IIBB Misiones ATM 2026 — Régimen Directo (fuente: calendario ATM/FIECE)
+// Formato: IIBB_ATM_2026[periodo_mm][grupo] = "YYYY-MM-DD"
+// Grupos: "01","23","45","67","89" (terminación CUIT)
+const IIBB_ATM_2026={
+  "01":{"01":"2026-02-13","23":"2026-02-18","45":"2026-02-19","67":"2026-02-20","89":"2026-02-23"},
+  "02":{"01":"2026-03-13","23":"2026-03-16","45":"2026-03-17","67":"2026-03-18","89":"2026-03-19"},
+  "03":{"01":"2026-04-13","23":"2026-04-14","45":"2026-04-15","67":"2026-04-16","89":"2026-04-17"},
+  "04":{"01":"2026-05-13","23":"2026-05-14","45":"2026-05-15","67":"2026-05-18","89":"2026-05-19"},
+  "05":{"01":"2026-06-16","23":"2026-06-17","45":"2026-06-18","67":"2026-06-19","89":"2026-06-22"},
+  "06":{"01":"2026-07-13","23":"2026-07-14","45":"2026-07-15","67":"2026-07-16","89":"2026-07-17"},
+  "07":{"01":"2026-08-13","23":"2026-08-14","45":"2026-08-18","67":"2026-08-19","89":"2026-08-20"},
+  "08":{"01":"2026-09-14","23":"2026-09-15","45":"2026-09-16","67":"2026-09-17","89":"2026-09-18"},
+  "09":{"01":"2026-10-13","23":"2026-10-14","45":"2026-10-15","67":"2026-10-16","89":"2026-10-19"},
+  "10":{"01":"2026-11-13","23":"2026-11-16","45":"2026-11-17","67":"2026-11-18","89":"2026-11-19"},
+  "11":{"01":"2026-12-14","23":"2026-12-15","45":"2026-12-16","67":"2026-12-17","89":"2026-12-18"},
+  "12":{"01":"2027-01-13","23":"2027-01-14","45":"2027-01-15","67":"2027-01-18","89":"2027-01-19"},
+};
+// IVA ARCA: patrón estándar día 18+floor(term/2) del mes siguiente al período
+// Si cae sábado→lunes, domingo→lunes
+function ivaVtoDate(periodoKey,term){
+  // periodoKey = "YYYY-MM"
+  const[y,m]=periodoKey.split("-").map(Number);
+  const nm=m===12?1:m+1; const ny=m===12?y+1:y;
+  const baseDay=18+Math.floor(term/2);
+  let d=new Date(ny,nm-1,baseDay);
+  if(d.getDay()===0)d.setDate(d.getDate()+1); // domingo→lunes
+  if(d.getDay()===6)d.setDate(d.getDate()+2); // sábado→lunes
+  return d;
+}
+function getCuitTerm(cuit){
+  const digits=String(cuit||"").replace(/\D/g,"");
+  if(digits.length<11)return-1;
+  return parseInt(digits[digits.length-2])||0; // penúltimo dígito (antes del verificador)
+}
+function getIIBBGroup(term){
+  if(term<=1)return"01";if(term<=3)return"23";if(term<=5)return"45";if(term<=7)return"67";return"89";
+}
+function getVencimientos(cuit,regimen){
+  const term=getCuitTerm(cuit);if(term<0)return[];
+  const today=new Date();today.setHours(0,0,0,0);
+  const results=[];
+  // Generar períodos: últimos 2 meses + mes actual
+  for(let offset=-2;offset<=0;offset++){
+    const pd=new Date(today.getFullYear(),today.getMonth()+offset,1);
+    const pk=`${pd.getFullYear()}-${String(pd.getMonth()+1).padStart(2,"0")}`;
+    const pLabel=MONTHS[pd.getMonth()]+" "+pd.getFullYear();
+    // IVA (solo RI)
+    if(regimen!=="MT"){
+      const ivaDt=ivaVtoDate(pk,term);
+      const diff=Math.ceil((ivaDt-today)/(1000*60*60*24));
+      if(diff>=-7&&diff<=30)results.push({tax:"IVA",org:"ARCA",periodo:pLabel,date:ivaDt,diff,key:"iva-"+pk});
+    }
+    // IIBB Misiones
+    const mm=String(pd.getMonth()+1).padStart(2,"0");
+    const grp=getIIBBGroup(term);
+    const iibbCal=IIBB_ATM_2026[mm];
+    if(iibbCal&&iibbCal[grp]){
+      const iibbDt=new Date(iibbCal[grp]+"T00:00:00");
+      const diff2=Math.ceil((iibbDt-today)/(1000*60*60*24));
+      if(diff2>=-7&&diff2<=30)results.push({tax:"IIBB",org:"ATM",periodo:pLabel,date:iibbDt,diff:diff2,key:"iibb-"+pk});
+    }
+  }
+  return results.sort((a,b)=>a.date-b.date);
+}
+function VencimientosPanel({clients}){
+  const allVtos=useMemo(()=>{
+    const items=[];
+    Object.entries(clients).forEach(([id,c])=>{
+      const vtos=getVencimientos(c.cuit,c.regimen);
+      vtos.forEach(v=>items.push({...v,clientName:c.name,clientId:id}));
+    });
+    return items.sort((a,b)=>a.date-b.date);
+  },[clients]);
+  const upcoming=allVtos.filter(v=>v.diff>=0);
+  const overdue=allVtos.filter(v=>v.diff<0);
+  if(allVtos.length===0)return null;
+  const fmtDate=d=>`${d.getDate()}/${d.getMonth()+1}`;
+  return(<div style={{marginBottom:20}}>
+    {overdue.length>0&&<div style={{background:"#2a1015",border:"1px solid #F8717144",borderRadius:10,padding:"12px 16px",marginBottom:10}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#F87171",marginBottom:8}}>⚠ Vencidos</div>
+      {overdue.map(v=>(<div key={v.key+v.clientId} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:13}}>
+        <span><span style={{color:"#e8e8e8",fontWeight:600}}>{v.clientName}</span> <span style={{color:"#888"}}>· {v.tax} {v.periodo}</span></span>
+        <span style={{color:"#F87171",fontWeight:600,fontSize:12}}>{fmtDate(v.date)} ({v.diff}d)</span>
+      </div>))}
+    </div>}
+    {upcoming.length>0&&<div style={{background:"#12122a",border:"1px solid #1a1a30",borderRadius:10,padding:"12px 16px"}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#6C9CFF",marginBottom:8}}>📅 Próximos vencimientos</div>
+      {upcoming.map(v=>{
+        const color=v.diff<=3?"#F87171":v.diff<=7?"#FBBF24":"#4ADE80";
+        const label=v.diff===0?"HOY":v.diff===1?"mañana":`en ${v.diff}d`;
+        return(<div key={v.key+v.clientId} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:13}}>
+          <span><span style={{color:"#e8e8e8",fontWeight:600}}>{v.clientName}</span> <span style={{color:"#888"}}>· {v.tax} {v.org} · {v.periodo}</span></span>
+          <span style={{color,fontWeight:600,fontSize:12}}>{fmtDate(v.date)} — {label}</span>
+        </div>);
+      })}
+    </div>}
+  </div>);
+}
+
 // Dashboard
 function Dashboard({clients,onSelect,onAdd,onDelete}){const[sf,setSf]=useState(false);const[name,setName]=useState("");const[cuit,setCuit]=useState("");const[search,setSearch]=useState("");
   const handleAdd=()=>{if(!name.trim()||!cuit.trim())return;onAdd({name:name.trim(),cuit:cuit.trim()});setName("");setCuit("");setSf(false);};
   const cl=Object.entries(clients).map(([id,c])=>({id,...c})).filter(c=>{if(!search)return true;const s=search.toLowerCase();return c.name.toLowerCase().includes(s)||c.cuit.includes(s);}).sort((a,b)=>a.name.localeCompare(b.name));
   const summaries=cl.map(c=>{const em=c.emitidos||[],rec=c.recibidos||[];const emP=[...new Set(em.map(r=>r.key))].sort();const recP=[...new Set(rec.map(r=>r.key))].sort();return{...c,totalComp:em.length+rec.length,emCount:em.length,recCount:rec.length,lastEm:emP.length?pLabel(emP[emP.length-1]):null,lastRec:recP.length?pLabel(recP[recP.length-1]):null};});
   return(<div><TopBar/>
+    <VencimientosPanel clients={clients}/>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:24,flexWrap:"wrap",gap:10}}><div><h1 style={{fontSize:20,fontWeight:700,margin:0}}>Clientes</h1><p style={{color:"#777",fontSize:13,marginTop:3}}>{cl.length} cliente{cl.length!==1?"s":""}</p></div><button onClick={()=>setSf(!sf)} style={{background:"#6C9CFF",color:"#fff",border:"none",borderRadius:8,padding:"9px 18px",fontSize:13,fontWeight:600,cursor:"pointer"}}>+ Nuevo cliente</button></div>
     {sf&&<div style={{background:"#12122a",borderRadius:10,padding:"18px",marginBottom:20,display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap"}}><div style={{flex:"1 1 200px"}}><label style={{fontSize:11,color:"#888",display:"block",marginBottom:4}}>Razón Social</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Nombre" onKeyDown={e=>e.key==="Enter"&&handleAdd()} style={{width:"100%",background:"#0a0a14",border:"1px solid #333",borderRadius:6,color:"#e8e8e8",padding:"8px 12px",fontSize:14,outline:"none"}}/></div><div style={{flex:"0 0 180px"}}><label style={{fontSize:11,color:"#888",display:"block",marginBottom:4}}>CUIT</label><input value={cuit} onChange={e=>setCuit(e.target.value)} placeholder="XX-XXXXXXXX-X" onKeyDown={e=>e.key==="Enter"&&handleAdd()} style={{width:"100%",background:"#0a0a14",border:"1px solid #333",borderRadius:6,color:"#e8e8e8",padding:"8px 12px",fontSize:14,outline:"none"}}/></div><button onClick={handleAdd} disabled={!name.trim()||!cuit.trim()} style={{background:name.trim()&&cuit.trim()?"#4ADE80":"#333",color:name.trim()&&cuit.trim()?"#000":"#666",border:"none",borderRadius:6,padding:"8px 20px",fontSize:13,fontWeight:600,cursor:name.trim()&&cuit.trim()?"pointer":"default"}}>Agregar</button><button onClick={()=>setSf(false)} style={{background:"none",border:"1px solid #333",borderRadius:6,padding:"8px 14px",color:"#888",fontSize:13,cursor:"pointer"}}>Cancelar</button></div>}
     {cl.length>3&&<div style={{marginBottom:16}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por nombre o CUIT..." style={{width:"100%",background:"#12122a",border:"1px solid #222",borderRadius:8,color:"#e8e8e8",padding:"10px 14px",fontSize:14,outline:"none"}}/></div>}
