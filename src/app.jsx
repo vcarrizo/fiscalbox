@@ -622,8 +622,8 @@ function classifyBankMov(concepto,causal){
   if(c.includes("AFIP")||c.includes("IMP. AFIP")||ca==="23"||ca==="3696")return"AFIP";
   if(c.includes("RET ING BRUTOS")||c.includes("IIBB"))return"Ret. IIBB";
   if(c.includes("SELLOS"))return"Imp. Sellos";
-  if(c.includes("DBCR")&&c.includes("S/DB"))return"Intereses Deudores";
-  if(c.includes("DBCR")&&c.includes("S/CR"))return"Intereses Acreedores";
+  if(c.includes("DBCR")&&c.includes("S/DB"))return"Imp. Déb. Bancarios";
+  if(c.includes("DBCR")&&c.includes("S/CR"))return"Imp. Créd. Bancarios";
   if(c.includes("INTER.ADEL"))return"Intereses Deudores";
   if(c.includes("DEBITO FISCAL IVA"))return"IVA Bancario";
   if(c.includes("ING TRANSF")||c.includes("TRANSF ")&&!c.includes("TRANSF:")||ca==="4543"||ca==="4544"||ca==="493"||ca==="4397"||ca==="4333"||ca==="4334")return"Transferencias Recibidas";
@@ -744,7 +744,7 @@ function BancosPanel({client,onUpdate}){
     return[...s].sort();
   },[monthly]);
 
-  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Intereses Deudores":"#EF4444","Intereses Acreedores":"#34D399","IVA Bancario":"#818CF8","Transferencias Recibidas":"#4ADE80","Imp. Sellos":"#D97706","Otros":"#6B7280"};
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transferencias Recibidas":"#4ADE80","Imp. Sellos":"#D97706","Otros":"#6B7280"};
 
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
