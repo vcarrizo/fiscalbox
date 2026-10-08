@@ -612,6 +612,221 @@ function GenerarAsientosPanel({client,plan,onGenerate}){
   </div>);
 }
 
+// ── Bancos Panel ──
+function classifyBankMov(concepto,causal){
+  const c=String(concepto||"").toUpperCase().trim();
+  const ca=String(causal||"").trim();
+  if(c.includes("CHEQUE P/CAMARA")||c.includes("CHEQUE CANJE"))return"Cheques";
+  if(c.includes("COMISION CHQ")||c.includes("COMISION CHEQUE"))return"Comisiones Cheques";
+  if(c.includes("MANTENIMIENTO")||c.includes("PAQUETE"))return"Mantenimiento Cuenta";
+  if(c.includes("AFIP")||c.includes("IMP. AFIP")||ca==="23"||ca==="3696")return"AFIP";
+  if(c.includes("RET ING BRUTOS")||c.includes("IIBB"))return"Ret. IIBB";
+  if(c.includes("SELLOS"))return"Imp. Sellos";
+  if(c.includes("DBCR")&&c.includes("S/DB"))return"Intereses Deudores";
+  if(c.includes("DBCR")&&c.includes("S/CR"))return"Intereses Acreedores";
+  if(c.includes("INTER.ADEL"))return"Intereses Deudores";
+  if(c.includes("DEBITO FISCAL IVA"))return"IVA Bancario";
+  if(c.includes("ING TRANSF")||c.includes("TRANSF ")&&!c.includes("TRANSF:")||ca==="4543"||ca==="4544"||ca==="493"||ca==="4397"||ca==="4333"||ca==="4334")return"Transferencias Recibidas";
+  if(c.includes("TRANSF:"))return"Transferencias Enviadas";
+  if(c.startsWith("NUMERO DE OPERACION")||c.match(/^\d+.*NUMERO DE OPERACION/i))return"Transferencias Recibidas";
+  return"Otros";
+}
+function parseBankFile(data){
+  const wb=XLSX.read(data,{type:"array",cellDates:false});
+  const sh=wb.Sheets[wb.SheetNames[0]];
+  const json=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
+  // Find header row (contains "Fecha" and ("Importe" or "Concepto"))
+  let hi=-1;
+  for(let i=0;i<Math.min(json.length,15);i++){
+    const row=json[i].map(x=>String(x||"").toLowerCase());
+    if(row.some(c=>c.includes("fecha"))&&row.some(c=>c.includes("importe")||c.includes("concepto")||c.includes("causal"))){hi=i;break;}
+  }
+  if(hi<0)return{rows:[],cuenta:"",moneda:"",empresa:""};
+  const H=json[hi];
+  const fc=findCol(H,["fecha"]);
+  const rc=findCol(H,["nro. de referencia","referencia","nro.referencia"]);
+  const cc=findCol(H,["causal"]);
+  const conc=findCol(H,["concepto"]);
+  const ic=findCol(H,["importe"]);
+  const sc=findCol(H,["saldo"]);
+  // Extract metadata from rows above header
+  let cuenta="",moneda="",empresa="";
+  for(let i=0;i<hi;i++){
+    const r0=String(json[i][0]||"").trim(),r2=String(json[i][2]||"").trim();
+    if(r0.toLowerCase().includes("número")||r0.toLowerCase().includes("numero"))cuenta=r2;
+    if(r0.toLowerCase().includes("moneda"))moneda=r2;
+  }
+  // Check last rows for empresa
+  for(let i=json.length-1;i>=Math.max(0,json.length-5);i--){
+    const v=String(json[i][0]||"");
+    if(v.includes("Empresa:"))empresa=v.replace("Empresa:","").trim();
+  }
+  const rows=[];
+  for(let i=hi+1;i<json.length;i++){
+    const r=json[i];
+    const fechaRaw=r[fc];
+    if(!fechaRaw||typeof fechaRaw!=="number")continue;
+    const d=XLSX.SSF.parse_date_code(fechaRaw);
+    if(!d)continue;
+    const fecha=new Date(d.y,d.m-1,d.d);
+    const importe=parseNum(r[ic]);
+    if(importe===0)continue;
+    const concepto=String(r[conc]||"").trim();
+    const causal=String(r[cc]||"").replace(".0","").trim();
+    const ref=String(r[rc]||"").trim();
+    const saldo=sc>=0?parseNum(r[sc]):0;
+    const tipo=classifyBankMov(concepto,causal);
+    const key=pKey(fecha.getFullYear(),fecha.getMonth()+1);
+    rows.push({fecha,key,ref,causal,concepto,importe,saldo,tipo});
+  }
+  return{rows,cuenta,moneda,empresa};
+}
+
+function BancosPanel({client,onUpdate}){
+  const movs=client.bancoMovs||[];
+  const bancoMeta=client.bancoMeta||{};
+  const[detPeriod,setDetPeriod]=useState(null);
+  const[detTipo,setDetTipo]=useState(null);
+
+  const handleFiles=useCallback(e=>{
+    e.preventDefault();
+    const files=e.dataTransfer?.files||e.target?.files;
+    if(!files?.length)return;
+    let loaded=0;const allNew=[];
+    for(const f of files){
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        const res=parseBankFile(ev.target.result);
+        allNew.push(...res.rows);
+        loaded++;
+        if(loaded===files.length){
+          // Deduplicate by ref+fecha+importe
+          const existing=new Set(movs.map(m=>`${m.ref}|${m.key}|${m.importe}`));
+          const fresh=allNew.filter(m=>!existing.has(`${m.ref}|${m.key}|${m.importe}`));
+          // Serialize dates
+          const serialized=fresh.map(m=>({...m,fecha:m.fecha.toISOString()}));
+          const meta=res.cuenta?{cuenta:res.cuenta,moneda:res.moneda,empresa:res.empresa}:bancoMeta;
+          onUpdate({...client,bancoMovs:[...movs,...serialized],bancoMeta:meta});
+        }
+      };
+      reader.readAsArrayBuffer(f);
+    }
+  },[client,onUpdate,movs,bancoMeta]);
+
+  const openFD=()=>{const i=document.createElement("input");i.type="file";i.accept=".xls,.xlsx";i.multiple=true;i.onchange=handleFiles;i.click();};
+  const clearBank=()=>{if(confirm("¿Eliminar todos los movimientos bancarios?"))onUpdate({...client,bancoMovs:[],bancoMeta:{}});};
+
+  // Parse dates back
+  const parsed=useMemo(()=>movs.map(m=>({...m,fecha:new Date(m.fecha)})),[movs]);
+
+  // Monthly summary
+  const monthly=useMemo(()=>{
+    const map={};
+    parsed.forEach(m=>{
+      if(!map[m.key])map[m.key]={acred:0,salidas:0,byTipo:{},count:0};
+      const p=map[m.key];
+      p.count++;
+      if(m.importe>0)p.acred+=m.importe;
+      else{
+        p.salidas+=Math.abs(m.importe);
+        const t=m.tipo;
+        if(!p.byTipo[t])p.byTipo[t]=0;
+        p.byTipo[t]+=Math.abs(m.importe);
+      }
+    });
+    return Object.entries(map).sort(([a],[b])=>a.localeCompare(b)).map(([key,v])=>({key,label:pLabel(key),...v}));
+  },[parsed]);
+
+  // All tipos for color assignment
+  const allTipos=useMemo(()=>{
+    const s=new Set();
+    monthly.forEach(m=>Object.keys(m.byTipo).forEach(t=>s.add(t)));
+    return[...s].sort();
+  },[monthly]);
+
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Intereses Deudores":"#EF4444","Intereses Acreedores":"#34D399","IVA Bancario":"#818CF8","Transferencias Recibidas":"#4ADE80","Imp. Sellos":"#D97706","Otros":"#6B7280"};
+
+  const detRows=useMemo(()=>{
+    if(!detPeriod)return[];
+    let rows=parsed.filter(m=>m.key===detPeriod);
+    if(detTipo)rows=rows.filter(m=>m.tipo===detTipo);
+    return rows.sort((a,b)=>b.fecha-a.fecha);
+  },[parsed,detPeriod,detTipo]);
+
+  const totals=useMemo(()=>monthly.reduce((a,m)=>({acred:a.acred+m.acred,salidas:a.salidas+m.salidas,count:a.count+m.count}),{acred:0,salidas:0,count:0}),[monthly]);
+
+  return(<div>
+    <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor="#FBBF24";}} onDragLeave={e=>{e.currentTarget.style.borderColor="#2a2a40";}} onDrop={e=>{e.currentTarget.style.borderColor="#2a2a40";handleFiles(e);}} style={{background:"#12122a",border:"2px dashed #2a2a40",borderRadius:12,padding:"20px",marginBottom:20,transition:"all .2s"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+        <div><div style={{fontSize:14,fontWeight:600,marginBottom:4}}>🏦 Resumen Bancario</div>
+          <div style={{fontSize:12,color:"#777"}}>Arrastrá o subí extractos bancarios (XLS).{bancoMeta.cuenta?` Cuenta: ${bancoMeta.cuenta}`:""}</div></div>
+        <div style={{display:"flex",gap:8}}>{movs.length>0&&<button onClick={clearBank} style={{background:"none",border:"1px solid #333",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#F8717188",cursor:"pointer"}}>Limpiar</button>}
+          <button onClick={openFD} style={{background:"#FBBF24",color:"#000",border:"none",borderRadius:8,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:"pointer"}}>+ Subir extracto</button></div>
+      </div>
+    </div>
+
+    {movs.length>0&&(<>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:20}} className="grid-3">
+        {[{label:"Acreditaciones",value:totals.acred,color:"#4ADE80"},{label:"Salidas",value:totals.salidas,color:"#F87171"},{label:"Movimientos",value:totals.count,color:"#6C9CFF",isCnt:true}].map((c,i)=>(<div key={i} style={{background:"#12122a",borderRadius:10,padding:"14px",borderLeft:`3px solid ${c.color}`}}>
+          <div style={{fontSize:10,color:"#777",textTransform:"uppercase",letterSpacing:1,marginBottom:5}}>{c.label}</div>
+          <div style={{fontSize:18,fontWeight:700,color:c.color,fontVariantNumeric:"tabular-nums"}}>{c.isCnt?c.value:fmt(c.value)}</div></div>))}
+      </div>
+
+      <div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
+        <div style={{padding:"12px 16px 8px",fontSize:13,fontWeight:600}}>Resumen mensual</div>
+        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:600}}>
+          <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>
+            {["Período","Movs","Acreditaciones","Salidas","Neto"].map(h=>(<th key={h} style={{padding:"7px 8px",textAlign:h==="Período"?"left":"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>{h}</th>))}
+          </tr></thead>
+          <tbody>{monthly.map(m=>{const neto=m.acred-m.salidas;return(<tr key={m.key} onClick={()=>{setDetPeriod(detPeriod===m.key?null:m.key);setDetTipo(null);}} style={{borderBottom:"1px solid #1a1a30",cursor:"pointer",background:detPeriod===m.key?"#1e1e40":"transparent"}}>
+            <td style={{padding:"7px 8px",fontWeight:600}}>{m.label}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",color:"#777"}}>{m.count}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(m.acred)}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",color:"#F87171",fontVariantNumeric:"tabular-nums"}}>{fmt(m.salidas)}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",fontWeight:600,fontVariantNumeric:"tabular-nums",color:neto>=0?"#4ADE80":"#F87171"}}>{fmt(neto)}</td>
+          </tr>);})}
+          <tr style={{borderTop:"2px solid #333"}}>
+            <td style={{padding:"8px",fontWeight:700}}>TOTALES</td>
+            <td style={{padding:"8px",textAlign:"right",color:"#777"}}>{totals.count}</td>
+            <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(totals.acred)}</td>
+            <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#F87171",fontVariantNumeric:"tabular-nums"}}>{fmt(totals.salidas)}</td>
+            <td style={{padding:"8px",textAlign:"right",fontWeight:700,fontVariantNumeric:"tabular-nums",color:totals.acred-totals.salidas>=0?"#4ADE80":"#F87171"}}>{fmt(totals.acred-totals.salidas)}</td>
+          </tr></tbody></table></div>
+      </div>
+
+      {detPeriod&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #2a2a40"}}>
+          <div style={{fontSize:14,fontWeight:600}}>Salidas por tipo — {pLabel(detPeriod)}</div>
+          <button onClick={()=>{setDetPeriod(null);setDetTipo(null);}} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div style={{padding:"12px 16px"}}><div style={{display:"grid",gap:6}}>
+          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipo||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:2,background:TIPO_COLORS[tipo]||"#666"}}></div><span style={{fontSize:13}}>{tipo}</span></div>
+            <span style={{fontSize:13,fontWeight:600,color:"#F87171",fontVariantNumeric:"tabular-nums"}}>{fmt(total)}</span>
+          </div>))}
+          {(()=>{const pm=monthly.find(m=>m.key===detPeriod);return pm?(<div style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderTop:"1px solid #2a2a40",marginTop:4}}>
+            <span style={{fontSize:12,color:"#4ADE80",fontWeight:600}}>Acreditaciones</span>
+            <span style={{fontSize:13,fontWeight:600,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(pm.acred)}</span>
+          </div>):null;})()}
+        </div></div>
+
+        {detTipo&&(<div style={{borderTop:"1px solid #2a2a40",padding:"12px 16px"}}>
+          <div style={{fontSize:12,fontWeight:600,color:"#888",marginBottom:8}}>Detalle: {detTipo}</div>
+          <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:500}}>
+            <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>{["Fecha","Concepto","Importe"].map(h=>(<th key={h} style={{padding:"5px 8px",textAlign:h==="Concepto"?"left":"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>{h}</th>))}</tr></thead>
+            <tbody>{detRows.map((m,i)=>(<tr key={i} style={{borderBottom:"1px solid #1a1a30"}}>
+              <td style={{padding:"5px 8px",textAlign:"right",color:"#777",whiteSpace:"nowrap"}}>{m.fecha.toLocaleDateString("es-AR")}</td>
+              <td style={{padding:"5px 8px",maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.concepto}</td>
+              <td style={{padding:"5px 8px",textAlign:"right",fontVariantNumeric:"tabular-nums",color:m.importe>=0?"#4ADE80":"#F87171",fontWeight:600}}>{fmt(m.importe)}</td>
+            </tr>))}</tbody></table></div>
+        </div>)}
+      </div>)}
+    </>)}
+
+    {movs.length===0&&<div style={{textAlign:"center",padding:"32px 20px",color:"#555",fontSize:13}}>Subí un extracto bancario para ver el resumen.</div>}
+  </div>);
+}
+
 // ── Contabilidad Panel ──
 function ContabilidadPanel({client,onUpdate}){
   const[tab,setTab]=useState("asientos");
@@ -729,7 +944,7 @@ function ClientView({client,onUpdate,onBack}){
       <div style={{display:"flex",gap:12,alignItems:"center",marginTop:6,flexWrap:"wrap"}}><span style={{color:"#777",fontSize:13}}>CUIT: {client.cuit}</span>
         <div style={{display:"flex",gap:4}}>{[["RI","Resp. Inscripto"],["MT","Monotributo"]].map(([r,l])=>(<button key={r} onClick={()=>onUpdate({...client,regimen:r})} style={{padding:"3px 10px",fontSize:11,fontWeight:600,borderRadius:4,cursor:"pointer",border:"none",background:(client.regimen||"RI")===r?(r==="RI"?"#6C9CFF":"#FBBF24")+"22":"transparent",color:(client.regimen||"RI")===r?(r==="RI"?"#6C9CFF":"#FBBF24"):"#555"}}>{l}</button>))}</div>
         {/* View toggle */}
-        <div style={{display:"flex",gap:4,marginLeft:8}}>{[["fiscal","Impositivo"],["contab","Contabilidad"]].map(([v,l])=>(<button key={v} onClick={()=>setView(v)} style={{padding:"3px 12px",fontSize:11,fontWeight:600,borderRadius:4,cursor:"pointer",border:"none",background:view===v?"#6C9CFF22":"transparent",color:view===v?"#6C9CFF":"#555"}}>{l}</button>))}</div>
+        <div style={{display:"flex",gap:4,marginLeft:8}}>{[["fiscal","Impositivo"],["contab","Contabilidad"],["bancos","Bancos"]].map(([v,l])=>(<button key={v} onClick={()=>setView(v)} style={{padding:"3px 12px",fontSize:11,fontWeight:600,borderRadius:4,cursor:"pointer",border:"none",background:view===v?"#6C9CFF22":"transparent",color:view===v?"#6C9CFF":"#555"}}>{l}</button>))}</div>
         {client.regimen==="MT"&&<select value={client.monoCat||"A"} onChange={e=>onUpdate({...client,monoCat:e.target.value})} style={{background:"#0a0a14",border:"1px solid #333",borderRadius:4,color:"#FBBF24",padding:"3px 8px",fontSize:11,fontWeight:600,outline:"none"}}>{MONO_SCALES.map(s=>(<option key={s.cat} value={s.cat}>Cat. {s.cat} ({fmtShort(s.tope)})</option>))}</select>}</div></div>
     {dups.length>0&&<div style={{background:"#F871711A",border:"1px solid #F8717133",borderRadius:10,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><div style={{fontSize:13,fontWeight:600,color:"#F87171"}}>⚠ {dups.length} duplicado{dups.length!==1?"s":""}</div><button onClick={fixDups} style={{background:"#F87171",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Limpiar</button></div>}
     <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor="#6C9CFF";}} onDragLeave={e=>{e.currentTarget.style.borderColor="#2a2a40";}} onDrop={e=>{e.currentTarget.style.borderColor="#2a2a40";handleFiles(e);}} style={{background:"#12122a",border:"2px dashed #2a2a40",borderRadius:12,padding:"20px",marginBottom:20,transition:"all .2s"}}>
@@ -738,6 +953,7 @@ function ClientView({client,onUpdate,onBack}){
       {loadedP.length>0&&<div style={{marginTop:16,paddingTop:14,borderTop:"1px solid #2a2a40"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><div style={{fontSize:12,fontWeight:600,color:"#888"}}>Períodos cargados</div><div style={{display:"flex",gap:8,fontSize:11}}><span style={{color:"#6C9CFF"}}>{emC} em.</span><span style={{color:"#555"}}>·</span><span style={{color:"#4ADE80"}}>{recC} rec.</span><span style={{color:"#555"}}>·</span><button onClick={clearAll} style={{background:"none",border:"none",color:"#F8717166",cursor:"pointer",fontSize:11,padding:0}}>Limpiar todo</button></div></div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{loadedP.map(p=>(<div key={p.key} style={{background:"#0a0a14",borderRadius:6,padding:"6px 10px",fontSize:11,display:"flex",gap:8,alignItems:"center",border:"1px solid #1a1a30"}}><span style={{fontWeight:600}}>{p.label}</span><span style={{color:"#6C9CFF"}}>{p.em}E</span><span style={{color:"#4ADE80"}}>{p.rec}R</span></div>))}</div></div>}</div>
     {showMan&&<ManualEntryForm onAdd={handleManualAdd} onClose={()=>setShowMan(false)} existingKeys={existingKeys}/>}
+    {view==="bancos"&&<BancosPanel client={client} onUpdate={onUpdate}/>}
     {hasData&&(<>
       {view==="contab"&&<ContabilidadPanel client={client} onUpdate={onUpdate}/>}
       {view==="fiscal"&&(<>
@@ -758,7 +974,7 @@ function ClientView({client,onUpdate,onBack}){
         <div style={{display:"flex",borderBottom:"1px solid #2a2a40"}}>{[["emitidos","Emitidos","#6C9CFF"],["recibidos","Recibidos","#4ADE80"]].map(([id,l,c])=>(<button key={id} onClick={()=>setDt(id)} style={{flex:1,padding:"9px",background:dt===id?c+"12":"transparent",border:"none",borderBottom:dt===id?`2px solid ${c}`:"2px solid transparent",color:dt===id?c:"#777",cursor:"pointer",fontSize:13,fontWeight:500}}>{l} ({id==="emitidos"?sel.countEm:sel.countRec})</button>))}</div>
         <MonthDetail rows={allRows} period={sp} type={dt}/></div>)}
     </>)}
-    {!hasData&&<div style={{textAlign:"center",padding:"32px 20px",color:"#555",fontSize:13}}>Subí archivos de ARCA para ver la liquidación.</div>}
+    {!hasData&&view!=="bancos"&&<div style={{textAlign:"center",padding:"32px 20px",color:"#555",fontSize:13}}>Subí archivos de ARCA para ver la liquidación.</div>}
   </div>);}
 
 // Dashboard
