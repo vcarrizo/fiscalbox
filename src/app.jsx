@@ -683,8 +683,15 @@ function parseBankFile(data){
 }
 
 function BancosPanel({client,onUpdate}){
-  const movs=client.bancoMovs||[];
+  const rawMovs=client.bancoMovs||[];
   const bancoMeta=client.bancoMeta||{};
+  // Reclasificar movimientos existentes con la función actual
+  const movs=useMemo(()=>{
+    let changed=false;
+    const updated=rawMovs.map(m=>{const t=classifyBankMov(m.concepto,m.causal);if(t!==m.tipo){changed=true;return{...m,tipo:t};}return m;});
+    if(changed)onUpdate({...client,bancoMovs:updated});
+    return updated;
+  },[rawMovs]);
   const[detPeriod,setDetPeriod]=useState(null);
   const[detTipo,setDetTipo]=useState(null);
 
