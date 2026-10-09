@@ -697,6 +697,7 @@ function BancosPanel({client,onUpdate,emitidos}){
   },[rawMovs,clientCuit]);
   const[detPeriod,setDetPeriod]=useState(null);
   const[detTipo,setDetTipo]=useState(null);
+  const[detSide,setDetSide]=useState(null); // "sal" or "acred"
 
   const handleFiles=useCallback(e=>{
     e.preventDefault();
@@ -738,9 +739,9 @@ function BancosPanel({client,onUpdate,emitidos}){
       p.count++;
       if(m.importe>0){
         p.acred+=m.importe;
-        const t=m.tipo;
-        if(!p.byTipoAcred[t])p.byTipoAcred[t]=0;
-        p.byTipoAcred[t]+=m.importe;
+        const ta=m.tipo==="Transf. Propias"?"Transf. Propias":"Transf. Terceros";
+        if(!p.byTipoAcred[ta])p.byTipoAcred[ta]=0;
+        p.byTipoAcred[ta]+=m.importe;
       }else{
         p.salidas+=Math.abs(m.importe);
         const t=m.tipo;
@@ -763,9 +764,14 @@ function BancosPanel({client,onUpdate,emitidos}){
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
     let rows=parsed.filter(m=>m.key===detPeriod);
-    if(detTipo)rows=rows.filter(m=>m.tipo===detTipo);
+    if(detSide==="acred")rows=rows.filter(m=>m.importe>0);
+    else if(detSide==="sal")rows=rows.filter(m=>m.importe<0);
+    if(detTipo){
+      if(detSide==="acred"&&detTipo==="Transf. Terceros")rows=rows.filter(m=>m.tipo!=="Transf. Propias");
+      else rows=rows.filter(m=>m.tipo===detTipo);
+    }
     return rows.sort((a,b)=>b.fecha-a.fecha);
-  },[parsed,detPeriod,detTipo]);
+  },[parsed,detPeriod,detTipo,detSide]);
 
   const totals=useMemo(()=>monthly.reduce((a,m)=>({acred:a.acred+m.acred,salidas:a.salidas+m.salidas,count:a.count+m.count}),{acred:0,salidas:0,count:0}),[monthly]);
 
@@ -775,7 +781,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     const emMap={};
     (emitidos||[]).forEach(r=>{const s=r.isNC?-1:1;if(!emMap[r.key])emMap[r.key]=0;emMap[r.key]+=r.total*s;});
     const bkMap={};
-    parsed.forEach(m=>{if(m.importe>0){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
+    parsed.forEach(m=>{if(m.importe>0&&m.tipo!=="Transf. Propias"){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
     const allKeys=[...new Set([...Object.keys(emMap),...Object.keys(bkMap)])].sort();
     return allKeys.map(k=>{const fact=emMap[k]||0;const acred=bkMap[k]||0;const diff=acred-fact;const pct=fact>0?((acred/fact)*100):0;return{key:k,label:pLabel(k),fact,acred,diff,pct};});
   },[emitidos,parsed,movs]);
@@ -805,7 +811,7 @@ function BancosPanel({client,onUpdate,emitidos}){
           <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>
             {["Período","Movs","Acreditaciones","Salidas","Neto"].map(h=>(<th key={h} style={{padding:"7px 8px",textAlign:h==="Período"?"left":"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>{h}</th>))}
           </tr></thead>
-          <tbody>{monthly.map(m=>{const neto=m.acred-m.salidas;return(<tr key={m.key} onClick={()=>{setDetPeriod(detPeriod===m.key?null:m.key);setDetTipo(null);}} style={{borderBottom:"1px solid #1a1a30",cursor:"pointer",background:detPeriod===m.key?"#1e1e40":"transparent"}}>
+          <tbody>{monthly.map(m=>{const neto=m.acred-m.salidas;return(<tr key={m.key} onClick={()=>{setDetPeriod(detPeriod===m.key?null:m.key);setDetTipo(null);setDetSide(null);}} style={{borderBottom:"1px solid #1a1a30",cursor:"pointer",background:detPeriod===m.key?"#1e1e40":"transparent"}}>
             <td style={{padding:"7px 8px",fontWeight:600}}>{m.label}</td>
             <td style={{padding:"7px 8px",textAlign:"right",color:"#777"}}>{m.count}</td>
             <td style={{padding:"7px 8px",textAlign:"right",color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(m.acred)}</td>
@@ -824,16 +830,16 @@ function BancosPanel({client,onUpdate,emitidos}){
       {detPeriod&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #2a2a40"}}>
           <div style={{fontSize:14,fontWeight:600}}>Detalle por tipo — {pLabel(detPeriod)}</div>
-          <button onClick={()=>{setDetPeriod(null);setDetTipo(null);}} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button>
+          <button onClick={()=>{setDetPeriod(null);setDetTipo(null);setDetSide(null);}} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button>
         </div>
         <div style={{padding:"12px 16px"}}><div style={{display:"grid",gap:6}}>
           <div style={{fontSize:11,color:"#F87171",fontWeight:600,textTransform:"uppercase",letterSpacing:1,padding:"4px 0"}}>Salidas</div>
-          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipo||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"s_"+tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
+          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipo||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"s_"+tipo} onClick={()=>{setDetTipo(detTipo===tipo&&detSide==="sal"?null:tipo);setDetSide("sal");}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo&&detSide==="sal"?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo&&detSide==="sal"?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:2,background:TIPO_COLORS[tipo]||"#666"}}></div><span style={{fontSize:13}}>{tipo}</span></div>
             <span style={{fontSize:13,fontWeight:600,color:"#F87171",fontVariantNumeric:"tabular-nums"}}>{fmt(total)}</span>
           </div>))}
           <div style={{borderTop:"1px solid #2a2a40",marginTop:6,paddingTop:10}}><div style={{fontSize:11,color:"#4ADE80",fontWeight:600,textTransform:"uppercase",letterSpacing:1,padding:"4px 0"}}>Acreditaciones</div></div>
-          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipoAcred||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"a_"+tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
+          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipoAcred||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"a_"+tipo} onClick={()=>{setDetTipo(detTipo===tipo&&detSide==="acred"?null:tipo);setDetSide("acred");}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo&&detSide==="acred"?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo&&detSide==="acred"?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:2,background:TIPO_COLORS[tipo]||"#666"}}></div><span style={{fontSize:13}}>{tipo}</span></div>
             <span style={{fontSize:13,fontWeight:600,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(total)}</span>
           </div>))}
