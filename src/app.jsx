@@ -682,7 +682,7 @@ function parseBankFile(data){
   return{rows,cuenta,moneda,empresa};
 }
 
-function BancosPanel({client,onUpdate}){
+function BancosPanel({client,onUpdate,emitidos}){
   const rawMovs=client.bancoMovs||[];
   const bancoMeta=client.bancoMeta||{};
   // Reclasificar movimientos existentes con la función actual
@@ -762,6 +762,19 @@ function BancosPanel({client,onUpdate}){
 
   const totals=useMemo(()=>monthly.reduce((a,m)=>({acred:a.acred+m.acred,salidas:a.salidas+m.salidas,count:a.count+m.count}),{acred:0,salidas:0,count:0}),[monthly]);
 
+  // Cruce facturación vs acreditaciones
+  const cruceData=useMemo(()=>{
+    if(!movs.length||!(emitidos||[]).length)return[];
+    const emMap={};
+    (emitidos||[]).forEach(r=>{const s=r.isNC?-1:1;if(!emMap[r.key])emMap[r.key]=0;emMap[r.key]+=r.total*s;});
+    const bkMap={};
+    parsed.forEach(m=>{if(m.importe>0){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
+    const allKeys=[...new Set([...Object.keys(emMap),...Object.keys(bkMap)])].sort();
+    return allKeys.map(k=>{const fact=emMap[k]||0;const acred=bkMap[k]||0;const diff=acred-fact;const pct=fact>0?((acred/fact)*100):0;return{key:k,label:pLabel(k),fact,acred,diff,pct};});
+  },[emitidos,parsed,movs]);
+  const cruceTotals=useMemo(()=>cruceData.reduce((a,c)=>({fact:a.fact+c.fact,acred:a.acred+c.acred}),{fact:0,acred:0}),[cruceData]);
+  const crucePct=cruceTotals.fact>0?((cruceTotals.acred/cruceTotals.fact)*100):0;
+
   return(<div>
     <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor="#FBBF24";}} onDragLeave={e=>{e.currentTarget.style.borderColor="#2a2a40";}} onDrop={e=>{e.currentTarget.style.borderColor="#2a2a40";handleFiles(e);}} style={{background:"#12122a",border:"2px dashed #2a2a40",borderRadius:12,padding:"20px",marginBottom:20,transition:"all .2s"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
@@ -829,6 +842,38 @@ function BancosPanel({client,onUpdate}){
         </div>)}
       </div>)}
     </>)}
+
+    {/* Cruce facturación vs acreditaciones */}
+    {cruceData.length>0&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
+      <div style={{padding:"12px 16px 8px",fontSize:13,fontWeight:600}}>📊 Cruce Facturación vs Acreditaciones</div>
+      <div style={{padding:"6px 16px 10px",fontSize:11,color:"#777"}}>Comparación entre lo facturado (emitidos) y lo acreditado en cuenta bancaria por período</div>
+      <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:650}}>
+        <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>
+          {["Período","Facturación","Acreditaciones","Diferencia","Cobranza %"].map(h=>(<th key={h} style={{padding:"7px 8px",textAlign:h==="Período"?"left":"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>{h}</th>))}
+        </tr></thead>
+        <tbody>{cruceData.map(c=>{
+          const diffColor=c.diff>=0?"#4ADE80":"#F87171";
+          const pctColor=c.pct>=100?"#4ADE80":c.pct>=80?"#FBBF24":"#F87171";
+          const barW=Math.min(c.pct,150);
+          return(<tr key={c.key} style={{borderBottom:"1px solid #1a1a30"}}>
+            <td style={{padding:"7px 8px",fontWeight:600}}>{c.label}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",color:"#6C9CFF",fontVariantNumeric:"tabular-nums"}}>{fmt(c.fact)}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(c.acred)}</td>
+            <td style={{padding:"7px 8px",textAlign:"right",fontWeight:600,fontVariantNumeric:"tabular-nums",color:diffColor}}>{fmt(c.diff)}</td>
+            <td style={{padding:"7px 8px",textAlign:"right"}}><div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
+              <div style={{width:60,height:6,background:"#1a1a30",borderRadius:3,overflow:"hidden"}}><div style={{width:`${Math.min(barW,100)}%`,height:"100%",background:pctColor,borderRadius:3}}></div></div>
+              <span style={{color:pctColor,fontWeight:600,fontVariantNumeric:"tabular-nums",fontSize:11,minWidth:42,textAlign:"right"}}>{c.pct.toFixed(0)}%</span>
+            </div></td>
+          </tr>);
+        })}
+        <tr style={{borderTop:"2px solid #333"}}>
+          <td style={{padding:"8px",fontWeight:700}}>TOTALES</td>
+          <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#6C9CFF",fontVariantNumeric:"tabular-nums"}}>{fmt(cruceTotals.fact)}</td>
+          <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(cruceTotals.acred)}</td>
+          <td style={{padding:"8px",textAlign:"right",fontWeight:700,fontVariantNumeric:"tabular-nums",color:cruceTotals.acred-cruceTotals.fact>=0?"#4ADE80":"#F87171"}}>{fmt(cruceTotals.acred-cruceTotals.fact)}</td>
+          <td style={{padding:"8px",textAlign:"right"}}><span style={{fontWeight:700,color:crucePct>=100?"#4ADE80":crucePct>=80?"#FBBF24":"#F87171",fontSize:12}}>{crucePct.toFixed(0)}%</span></td>
+        </tr></tbody></table></div>
+    </div>)}
 
     {movs.length===0&&<div style={{textAlign:"center",padding:"32px 20px",color:"#555",fontSize:13}}>Subí un extracto bancario para ver el resumen.</div>}
   </div>);
@@ -960,7 +1005,7 @@ function ClientView({client,onUpdate,onBack}){
       {loadedP.length>0&&<div style={{marginTop:16,paddingTop:14,borderTop:"1px solid #2a2a40"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><div style={{fontSize:12,fontWeight:600,color:"#888"}}>Períodos cargados</div><div style={{display:"flex",gap:8,fontSize:11}}><span style={{color:"#6C9CFF"}}>{emC} em.</span><span style={{color:"#555"}}>·</span><span style={{color:"#4ADE80"}}>{recC} rec.</span><span style={{color:"#555"}}>·</span><button onClick={clearAll} style={{background:"none",border:"none",color:"#F8717166",cursor:"pointer",fontSize:11,padding:0}}>Limpiar todo</button></div></div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{loadedP.map(p=>(<div key={p.key} style={{background:"#0a0a14",borderRadius:6,padding:"6px 10px",fontSize:11,display:"flex",gap:8,alignItems:"center",border:"1px solid #1a1a30"}}><span style={{fontWeight:600}}>{p.label}</span><span style={{color:"#6C9CFF"}}>{p.em}E</span><span style={{color:"#4ADE80"}}>{p.rec}R</span></div>))}</div></div>}</div>
     {showMan&&<ManualEntryForm onAdd={handleManualAdd} onClose={()=>setShowMan(false)} existingKeys={existingKeys}/>}
-    {view==="bancos"&&<BancosPanel client={client} onUpdate={onUpdate}/>}
+    {view==="bancos"&&<BancosPanel client={client} onUpdate={onUpdate} emitidos={client.emitidos}/>}
     {hasData&&(<>
       {view==="contab"&&<ContabilidadPanel client={client} onUpdate={onUpdate}/>}
       {view==="fiscal"&&(<>
