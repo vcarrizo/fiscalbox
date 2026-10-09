@@ -613,7 +613,7 @@ function GenerarAsientosPanel({client,plan,onGenerate}){
 }
 
 // ── Bancos Panel ──
-function classifyBankMov(concepto,causal){
+function classifyBankMov(concepto,causal,clientCuit){
   const c=String(concepto||"").toUpperCase().trim();
   const ca=String(causal||"").trim();
   if(c.includes("CHEQUE P/CAMARA")||c.includes("CHEQUE CANJE"))return"Cheques";
@@ -626,9 +626,11 @@ function classifyBankMov(concepto,causal){
   if(c.includes("DBCR")&&c.includes("S/CR"))return"Imp. Créd. Bancarios";
   if(c.includes("INTER.ADEL"))return"Intereses Deudores";
   if(c.includes("DEBITO FISCAL IVA"))return"IVA Bancario";
-  if(c.includes("ING TRANSF")||c.includes("TRANSF ")&&!c.includes("TRANSF:")||ca==="4543"||ca==="4544"||ca==="493"||ca==="4397"||ca==="4333"||ca==="4334")return"Transferencias Recibidas";
+  if(c.includes("ING TRANSF")||c.includes("TRANSF ")&&!c.includes("TRANSF:")||ca==="4543"||ca==="4544"||ca==="493"||ca==="4397"||ca==="4333"||ca==="4334"||c.startsWith("NUMERO DE OPERACION")||c.match(/^\d+.*NUMERO DE OPERACION/i)){
+    if(clientCuit){const cuitClean=clientCuit.replace(/[-\s]/g,"");if(c.includes(cuitClean))return"Transf. Propias";}
+    return"Transf. Terceros";
+  }
   if(c.includes("TRANSF:"))return"Transferencias Enviadas";
-  if(c.startsWith("NUMERO DE OPERACION")||c.match(/^\d+.*NUMERO DE OPERACION/i))return"Transferencias Recibidas";
   return"Otros";
 }
 function parseBankFile(data){
@@ -686,12 +688,13 @@ function BancosPanel({client,onUpdate,emitidos}){
   const rawMovs=client.bancoMovs||[];
   const bancoMeta=client.bancoMeta||{};
   // Reclasificar movimientos existentes con la función actual
+  const clientCuit=client.cuit||"";
   const movs=useMemo(()=>{
     let changed=false;
-    const updated=rawMovs.map(m=>{const t=classifyBankMov(m.concepto,m.causal);if(t!==m.tipo){changed=true;return{...m,tipo:t};}return m;});
+    const updated=rawMovs.map(m=>{const t=classifyBankMov(m.concepto,m.causal,clientCuit);if(t!==m.tipo){changed=true;return{...m,tipo:t};}return m;});
     if(changed)onUpdate({...client,bancoMovs:updated});
     return updated;
-  },[rawMovs]);
+  },[rawMovs,clientCuit]);
   const[detPeriod,setDetPeriod]=useState(null);
   const[detTipo,setDetTipo]=useState(null);
 
@@ -751,7 +754,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     return[...s].sort();
   },[monthly]);
 
-  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transferencias Recibidas":"#4ADE80","Imp. Sellos":"#D97706","Otros":"#6B7280"};
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Otros":"#6B7280"};
 
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
