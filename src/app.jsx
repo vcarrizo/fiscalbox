@@ -733,11 +733,15 @@ function BancosPanel({client,onUpdate,emitidos}){
   const monthly=useMemo(()=>{
     const map={};
     parsed.forEach(m=>{
-      if(!map[m.key])map[m.key]={acred:0,salidas:0,byTipo:{},count:0};
+      if(!map[m.key])map[m.key]={acred:0,salidas:0,byTipo:{},byTipoAcred:{},count:0};
       const p=map[m.key];
       p.count++;
-      if(m.importe>0)p.acred+=m.importe;
-      else{
+      if(m.importe>0){
+        p.acred+=m.importe;
+        const t=m.tipo;
+        if(!p.byTipoAcred[t])p.byTipoAcred[t]=0;
+        p.byTipoAcred[t]+=m.importe;
+      }else{
         p.salidas+=Math.abs(m.importe);
         const t=m.tipo;
         if(!p.byTipo[t])p.byTipo[t]=0;
@@ -819,18 +823,20 @@ function BancosPanel({client,onUpdate,emitidos}){
 
       {detPeriod&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #2a2a40"}}>
-          <div style={{fontSize:14,fontWeight:600}}>Salidas por tipo — {pLabel(detPeriod)}</div>
+          <div style={{fontSize:14,fontWeight:600}}>Detalle por tipo — {pLabel(detPeriod)}</div>
           <button onClick={()=>{setDetPeriod(null);setDetTipo(null);}} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button>
         </div>
         <div style={{padding:"12px 16px"}}><div style={{display:"grid",gap:6}}>
-          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipo||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
+          <div style={{fontSize:11,color:"#F87171",fontWeight:600,textTransform:"uppercase",letterSpacing:1,padding:"4px 0"}}>Salidas</div>
+          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipo||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"s_"+tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:2,background:TIPO_COLORS[tipo]||"#666"}}></div><span style={{fontSize:13}}>{tipo}</span></div>
             <span style={{fontSize:13,fontWeight:600,color:"#F87171",fontVariantNumeric:"tabular-nums"}}>{fmt(total)}</span>
           </div>))}
-          {(()=>{const pm=monthly.find(m=>m.key===detPeriod);return pm?(<div style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderTop:"1px solid #2a2a40",marginTop:4}}>
-            <span style={{fontSize:12,color:"#4ADE80",fontWeight:600}}>Acreditaciones</span>
-            <span style={{fontSize:13,fontWeight:600,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(pm.acred)}</span>
-          </div>):null;})()}
+          <div style={{borderTop:"1px solid #2a2a40",marginTop:6,paddingTop:10}}><div style={{fontSize:11,color:"#4ADE80",fontWeight:600,textTransform:"uppercase",letterSpacing:1,padding:"4px 0"}}>Acreditaciones</div></div>
+          {Object.entries(monthly.find(m=>m.key===detPeriod)?.byTipoAcred||{}).sort(([,a],[,b])=>b-a).map(([tipo,total])=>(<div key={"a_"+tipo} onClick={()=>setDetTipo(detTipo===tipo?null:tipo)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:detTipo===tipo?"#1e1e40":"#0a0a14",borderRadius:6,cursor:"pointer",border:detTipo===tipo?"1px solid #6C9CFF33":"1px solid #1a1a30"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:2,background:TIPO_COLORS[tipo]||"#666"}}></div><span style={{fontSize:13}}>{tipo}</span></div>
+            <span style={{fontSize:13,fontWeight:600,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(total)}</span>
+          </div>))}
         </div></div>
 
         {detTipo&&(<div style={{borderTop:"1px solid #2a2a40",padding:"12px 16px"}}>
