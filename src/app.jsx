@@ -7,6 +7,7 @@ function saveDB(db){localStorage.setItem(DB_KEY,JSON.stringify(db));}
 function parseDate(v){if(!v)return null;if(v instanceof Date&&!isNaN(v))return v;if(typeof v==="number"){const d=XLSX.SSF.parse_date_code(v);if(d)return new Date(d.y,d.m-1,d.d);}const s=String(v).trim();const m1=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);if(m1)return new Date(+m1[3],+m1[2]-1,+m1[1]);const m2=s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);if(m2)return new Date(+m2[1],+m2[2]-1,+m2[3]);const d=new Date(s);return isNaN(d.getTime())?null:d;}
 function findCol(H,P){const h=H.map(x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim());for(const p of P){const i=h.findIndex(x=>x.includes(p));if(i>=0)return i;}return-1;}
 function parseNum(v){if(v==null||v==="")return 0;if(typeof v==="number")return v;return parseFloat(String(v).replace(/\./g,"").replace(",","."))||0;}
+function parseNumIntl(v){if(v==null||v==="")return 0;if(typeof v==="number")return v;return parseFloat(String(v).replace(/,/g,""))||0;}
 const NC_P=["nota de credito","nota de crédito","nc ","notas de credito","notas de crédito"];
 const NC_CODES=new Set(["3","8","13","53","203","208","213"]);
 function isNotaCredito(t){if(!t)return false;const s=String(t).trim();if(NC_CODES.has(s))return true;const l=s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");return NC_P.some(n=>l.includes(n));}
@@ -660,14 +661,14 @@ function parseMPFile(json){
     if(!fechaRaw)continue;
     const fecha=new Date(fechaRaw);
     if(isNaN(fecha.getTime()))continue;
-    const neto=parseNum(r[netoCol]);
+    const neto=parseNumIntl(r[netoCol]);
     if(neto===0)continue;
     const tipoOp=String(r[opCol]||"").trim();
     const medioPago=String(r[medioCol]||"").trim();
     const canal=String(r[canalCol]||"").trim();
     const plat=String(r[platCol]||"").trim();
-    const iibb=parseNum(r[iibbCol]);
-    const com=parseNum(r[comCol]);
+    const iibb=parseNumIntl(r[iibbCol]);
+    const com=parseNumIntl(r[comCol]);
     const ref=String(r[idCol]||"").trim();
     // Build concepto from available info
     let concepto=tipoOp;
