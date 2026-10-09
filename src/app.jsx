@@ -633,10 +633,62 @@ function classifyBankMov(concepto,causal,clientCuit){
   if(c.includes("TRANSF:"))return"Transferencias Enviadas";
   return"Otros";
 }
+function classifyMPMov(tipoOp,medioPago,importe){
+  const op=String(tipoOp||"").toUpperCase().trim();
+  const medio=String(medioPago||"").toLowerCase().trim();
+  if(op==="PAYOUTS")return"Retiro MP";
+  if(medio.includes("transferencia bancaria"))return importe>0?"Transf. Recibida MP":"Transf. Enviada MP";
+  if(medio==="available_money"||op.includes("PAGO APROBADO"))return importe>0?"Cobro MP":"Pago MP";
+  return"Otros MP";
+}
+function parseMPFile(json){
+  const H=json[0];
+  const idCol=findCol(H,["id de operaci"]);
+  const medioCol=findCol(H,["tipo de medio de pago"]);
+  const opCol=findCol(H,["tipo de operaci"]);
+  const valorCol=findCol(H,["valor de la compra"]);
+  const fechaCol=findCol(H,["fecha de origen"]);
+  const comCol=findCol(H,["comisiones"]);
+  const netoCol=findCol(H,["monto neto"]);
+  const iibbCol=findCol(H,["retenciones de iibb","impuestos cobrados"]);
+  const canalCol=findCol(H,["canal de venta"]);
+  const platCol=findCol(H,["plataforma de cobro"]);
+  const rows=[];
+  for(let i=1;i<json.length;i++){
+    const r=json[i];
+    const fechaRaw=String(r[fechaCol]||"");
+    if(!fechaRaw)continue;
+    const fecha=new Date(fechaRaw);
+    if(isNaN(fecha.getTime()))continue;
+    const neto=parseNum(r[netoCol]);
+    if(neto===0)continue;
+    const tipoOp=String(r[opCol]||"").trim();
+    const medioPago=String(r[medioCol]||"").trim();
+    const canal=String(r[canalCol]||"").trim();
+    const plat=String(r[platCol]||"").trim();
+    const iibb=parseNum(r[iibbCol]);
+    const com=parseNum(r[comCol]);
+    const ref=String(r[idCol]||"").trim();
+    // Build concepto from available info
+    let concepto=tipoOp;
+    if(medioPago)concepto+=` | ${medioPago}`;
+    if(canal)concepto+=` | ${canal}`;
+    if(plat)concepto+=` | ${plat}`;
+    const tipo=classifyMPMov(tipoOp,medioPago,neto);
+    const key=pKey(fecha.getFullYear(),fecha.getMonth()+1);
+    rows.push({fecha,key,ref,causal:"",concepto,importe:neto,saldo:0,tipo,iibb,comision:com});
+  }
+  return{rows,cuenta:"Mercado Pago",moneda:"ARS",empresa:""};
+}
 function parseBankFile(data){
   const wb=XLSX.read(data,{type:"array",cellDates:false});
   const sh=wb.Sheets[wb.SheetNames[0]];
   const json=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
+  // Detect Mercado Pago format
+  if(json.length>0){
+    const first=String(json[0][0]||"").toLowerCase();
+    if(first.includes("id de operaci"))return parseMPFile(json);
+  }
   // Find header row (contains "Fecha" and ("Importe" or "Concepto"))
   let hi=-1;
   for(let i=0;i<Math.min(json.length,15);i++){
@@ -691,7 +743,13 @@ function BancosPanel({client,onUpdate,emitidos}){
   const clientCuit=client.cuit||"";
   const movs=useMemo(()=>{
     let changed=false;
-    const updated=rawMovs.map(m=>{const t=classifyBankMov(m.concepto,m.causal,clientCuit);if(t!==m.tipo){changed=true;return{...m,tipo:t};}return m;});
+    const updated=rawMovs.map(m=>{
+      // Skip MP movements — they have their own classifier
+      if(m.tipo&&m.tipo.endsWith(" MP"))return m;
+      const t=classifyBankMov(m.concepto,m.causal,clientCuit);
+      if(t!==m.tipo){changed=true;return{...m,tipo:t};}
+      return m;
+    });
     if(changed)onUpdate({...client,bancoMovs:updated});
     return updated;
   },[rawMovs,clientCuit]);
@@ -739,7 +797,8 @@ function BancosPanel({client,onUpdate,emitidos}){
       p.count++;
       if(m.importe>0){
         p.acred+=m.importe;
-        const ta=m.tipo==="Transf. Propias"?"Transf. Propias":"Transf. Terceros";
+        // MP movements keep their own tipo; bank acreditaciones → Propias/Terceros
+        const ta=m.tipo&&m.tipo.endsWith(" MP")?m.tipo:(m.tipo==="Transf. Propias"?"Transf. Propias":"Transf. Terceros");
         if(!p.byTipoAcred[ta])p.byTipoAcred[ta]=0;
         p.byTipoAcred[ta]+=m.importe;
       }else{
@@ -759,7 +818,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     return[...s].sort();
   },[monthly]);
 
-  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Otros":"#6B7280"};
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Cobro MP":"#22D3EE","Pago MP":"#FB7185","Retiro MP":"#C084FC","Transf. Recibida MP":"#2DD4BF","Transf. Enviada MP":"#E879F9","Otros MP":"#9CA3AF","Otros":"#6B7280"};
 
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
