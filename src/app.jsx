@@ -146,6 +146,35 @@ function RetPercEditor({data,onChange,periods}){const[adding,setAdding]=useState
     {adding&&<div style={{background:"#0a0a14",borderRadius:8,padding:"12px",marginBottom:12,display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",border:"1px solid #2a2a40"}}><div><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>Período</label><select value={ek} onChange={e=>setEk(e.target.value)} style={{background:"#12122a",border:"1px solid #333",borderRadius:6,color:"#e8e8e8",padding:"6px 10px",fontSize:13,outline:"none"}}>{periods.map(p=>(<option key={p} value={p}>{pLabel(p)}</option>))}</select></div><div><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>Retenciones</label><input type="number" value={rv} onChange={e=>setRv(e.target.value)} placeholder="0.00" style={{background:"#12122a",border:"1px solid #333",borderRadius:6,color:"#e8e8e8",padding:"6px 10px",fontSize:13,width:120,outline:"none"}}/></div><div><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>Percepciones</label><input type="number" value={pv} onChange={e=>setPv(e.target.value)} placeholder="0.00" style={{background:"#12122a",border:"1px solid #333",borderRadius:6,color:"#e8e8e8",padding:"6px 10px",fontSize:13,width:120,outline:"none"}}/></div><button onClick={handleAdd} style={{background:"#8B5CF6",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Agregar</button><button onClick={()=>setAdding(false)} style={{background:"none",border:"1px solid #333",borderRadius:6,padding:"6px 12px",color:"#888",fontSize:12,cursor:"pointer"}}>Cancelar</button></div>}
     {entries.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6}}>{entries.map(([k,v])=>(<div key={k} style={{background:"#0a0a14",borderRadius:6,padding:"6px 10px",fontSize:11,display:"flex",gap:8,alignItems:"center",border:"1px solid #1a1a30"}}><span style={{fontWeight:600}}>{pLabel(k)}</span>{v.ret>0&&<span style={{color:"#C084FC"}}>R: {fmt(v.ret)}</span>}{v.perc>0&&<span style={{color:"#A78BFA"}}>P: {fmt(v.perc)}</span>}<button onClick={()=>{const n={...data};delete n[k];onChange(n);}} style={{background:"none",border:"none",color:"#F8717166",cursor:"pointer",fontSize:12,padding:0}}>✕</button></div>))}</div>}</div>);}
 
+// Export Libro IVA
+function exportLibroIVA(allRows,period,clientName){
+  const FULL_MONTHS=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  const[y,m]=period.split("-");const monthName=FULL_MONTHS[+m-1];
+  const makeSheet=(rows)=>{
+    const sorted=[...rows].sort((a,b)=>new Date(a.fecha)-new Date(b.fecha));
+    const data=sorted.map(r=>{const d=new Date(r.fecha);return{"Fecha":d.toLocaleDateString("es-AR"),"Tipo":r.tipo,"Pto Venta":r.ptoVenta,"Número":r.numDesde,"CUIT":r.cuit,"Denominación":r.denom,"Neto Gravado":r.neto,"No Gravado":r.noGrav||0,"Exentas":r.exentas||0,"IVA 21%":r.iva21||0,"IVA 10,5%":r.iva105||0,"IVA 27%":r.iva27||0,"Total IVA":r.iva,"Total":r.total};});
+    // Totals row
+    const tot={"Fecha":"","Tipo":"","Pto Venta":"","Número":"","CUIT":"","Denominación":"TOTALES","Neto Gravado":0,"No Gravado":0,"Exentas":0,"IVA 21%":0,"IVA 10,5%":0,"IVA 27%":0,"Total IVA":0,"Total":0};
+    data.forEach(r=>{tot["Neto Gravado"]+=r["Neto Gravado"];tot["No Gravado"]+=r["No Gravado"];tot["Exentas"]+=r["Exentas"];tot["IVA 21%"]+=r["IVA 21%"];tot["IVA 10,5%"]+=r["IVA 10,5%"];tot["IVA 27%"]+=r["IVA 27%"];tot["Total IVA"]+=r["Total IVA"];tot["Total"]+=r["Total"];});
+    data.push(tot);
+    const ws=XLSX.utils.json_to_sheet(data);
+    // Column widths
+    ws["!cols"]=[{wch:12},{wch:18},{wch:8},{wch:12},{wch:14},{wch:30},{wch:14},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:14}];
+    // Format numbers
+    const range=XLSX.utils.decode_range(ws["!ref"]);
+    for(let R=1;R<=range.e.r;R++){for(let C=6;C<=13;C++){const addr=XLSX.utils.encode_cell({r:R,c:C});if(ws[addr]&&typeof ws[addr].v==="number")ws[addr].z="#,##0.00";}}
+    return ws;
+  };
+  const em=allRows.filter(r=>r.key===period&&r.fileType==="emitidos");
+  const rec=allRows.filter(r=>r.key===period&&r.fileType==="recibidos");
+  const wb=XLSX.utils.book_new();
+  if(em.length)XLSX.utils.book_append_sheet(wb,makeSheet(em),"IVA Ventas");
+  if(rec.length)XLSX.utils.book_append_sheet(wb,makeSheet(rec),"IVA Compras");
+  if(!em.length&&!rec.length)return;
+  const safeName=(clientName||"cliente").replace(/[^a-zA-Z0-9_\- ]/g,"").substring(0,30);
+  XLSX.writeFile(wb,`Libro_IVA_${safeName}_${monthName}_${y}.xlsx`);
+}
+
 // Month Detail
 function MonthDetail({rows,period,type}){const f=rows.filter(r=>r.key===period&&r.fileType===type);if(!f.length)return<div style={{padding:16,color:"#666",fontSize:13,textAlign:"center"}}>Sin comprobantes</div>;
   return(<div style={{maxHeight:300,overflowY:"auto",overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:620}}><thead><tr style={{borderBottom:"1px solid #333"}}>{["Fecha","Tipo","PV","Nro","Denominación","Neto","IVA","Total"].map((h,i)=>(<th key={h} style={{padding:"7px 8px",textAlign:i<5?"left":"right",color:"#777",fontWeight:500,fontSize:10,textTransform:"uppercase",position:"sticky",top:0,background:"#1a1a2e"}}>{h}</th>))}</tr></thead>
@@ -1100,7 +1129,7 @@ function ClientView({client,onUpdate,onBack}){
               <tr style={{borderTop:"2px solid #333"}}><td style={{padding:"8px",fontWeight:700}}>TOTALES</td><td style={{padding:"8px",textAlign:"right",color:"#777"}}>{accumulated.reduce((s,m)=>s+m.countEm,0)}</td><td style={{padding:"8px",textAlign:"right",color:"#777"}}>{accumulated.reduce((s,m)=>s+m.countRec,0)}</td><td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#6C9CFF",fontVariantNumeric:"tabular-nums"}}>{fmt(totals.debito)}</td><td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#4ADE80",fontVariantNumeric:"tabular-nums"}}>{fmt(totals.credito)}</td><td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#8B5CF6",fontVariantNumeric:"tabular-nums"}}>{totals.ret?fmt(totals.ret):"—"}</td><td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#A78BFA",fontVariantNumeric:"tabular-nums"}}>{totals.perc?fmt(totals.perc):"—"}</td><td colSpan={2}></td><td style={{padding:"8px",textAlign:"right",fontWeight:700,fontVariantNumeric:"tabular-nums",color:lastAcc&&lastAcc.posicion>0?"#F87171":"#4ADE80"}}>{lastAcc?fmt(lastAcc.posicion):"—"}</td><td colSpan={2}></td></tr></tbody></table></div></div>
       </>)}
       </>)}
-      {sel&&view==="fiscal"&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #2a2a40"}}><div style={{fontSize:14,fontWeight:600}}>Comprobantes — {sel.label}</div><button onClick={()=>setSp(null)} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button></div>
+      {sel&&view==="fiscal"&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #2a2a40"}}><div style={{fontSize:14,fontWeight:600}}>Comprobantes — {sel.label}</div><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={()=>exportLibroIVA(allRows,sp,client.name)} style={{background:"#4ADE8022",border:"1px solid #4ADE8044",borderRadius:6,padding:"5px 12px",fontSize:11,fontWeight:600,color:"#4ADE80",cursor:"pointer",whiteSpace:"nowrap"}}>📥 Libro IVA</button><button onClick={()=>setSp(null)} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:20,lineHeight:1}}>×</button></div></div>
         <div style={{display:"flex",borderBottom:"1px solid #2a2a40"}}>{[["emitidos","Emitidos","#6C9CFF"],["recibidos","Recibidos","#4ADE80"]].map(([id,l,c])=>(<button key={id} onClick={()=>setDt(id)} style={{flex:1,padding:"9px",background:dt===id?c+"12":"transparent",border:"none",borderBottom:dt===id?`2px solid ${c}`:"2px solid transparent",color:dt===id?c:"#777",cursor:"pointer",fontSize:13,fontWeight:500}}>{l} ({id==="emitidos"?sel.countEm:sel.countRec})</button>))}</div>
         <MonthDetail rows={allRows} period={sp} type={dt}/></div>)}
     </>)}
