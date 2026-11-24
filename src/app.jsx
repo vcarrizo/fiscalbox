@@ -717,9 +717,33 @@ function classifyMPMov(tipoOp,medioPago,importe){
   const op=String(tipoOp||"").toUpperCase().trim();
   const medio=String(medioPago||"").toLowerCase().trim();
   if(op==="PAYOUTS")return"Retiro MP";
+  if(op==="CREDIT")return"Crédito MP";
   if(medio.includes("transferencia bancaria"))return importe>0?"Transf. Recibida MP":"Transf. Enviada MP";
   if(medio==="available_money"||op.includes("PAGO APROBADO"))return importe>0?"Cobro MP":"Pago MP";
   return"Otros MP";
+}
+// Desglose de "IMPUESTOS DESAGREGADOS" (JSON) del reporte de liquidaciones de MP.
+// La columna "impuestos cobrados por retenciones de IIBB" trae el TOTAL de impuestos, no solo IIBB.
+function parseMPTaxes(raw,importe){
+  const txt=String(raw||"").trim();
+  if(!txt||txt[0]!=="[")return null;
+  let arr;try{arr=JSON.parse(txt);}catch(e){return null;}
+  if(!Array.isArray(arr))return null;
+  return arr.map(e=>{
+    const ent=String(e.financial_entity||"").toLowerCase();
+    const det=String(e.detail||"").toLowerCase();
+    const monto=Math.abs(parseFloat(e.amount)||0);
+    let tipo,sub;
+    if(ent==="debitos_creditos"){tipo=importe<0?"Imp. Déb. Bancarios":"Imp. Créd. Bancarios";sub="Ley 25.413";}
+    else if(ent.includes("payer")||ent.includes("payout")||det.includes("payer")||det.includes("payout")){tipo="Imp. Déb. Bancarios";sub=det.includes("payout")?"Ley 25.413 — retiro":"Ley 25.413 — pago";}
+    else if(ent==="sircupa"||det.includes("sircupa")){tipo="Ret. IIBB";sub="SIRCUPA";}
+    else if(det.includes("sirtac")){tipo="Ret. IIBB";sub=`SIRTAC ${ent.charAt(0).toUpperCase()+ent.slice(1)}`;}
+    else if(ent.includes("iibb")||det.includes("iibb")||det.includes("sircreb")){tipo="Ret. IIBB";sub=ent.toUpperCase();}
+    else if(ent.includes("iva")||det.includes("iva")){tipo="Perc. IVA";sub=ent;}
+    else if(ent.includes("ganancia")||det.includes("ganancia")){tipo="Ret. Ganancias";sub=ent;}
+    else{tipo="Otros imp. MP";sub=`${ent} / ${det}`;}
+    return{tipo,sub,monto};
+  }).filter(x=>x.monto>0);
 }
 function parseMPFile(json){
   const H=json[0];
@@ -731,6 +755,7 @@ function parseMPFile(json){
   const comCol=findCol(H,["comisiones"]);
   const netoCol=findCol(H,["monto neto"]);
   const iibbCol=findCol(H,["retenciones de iibb","impuestos cobrados"]);
+  const desagCol=findCol(H,["impuestos desagregados"]);
   const canalCol=findCol(H,["canal de venta"]);
   const platCol=findCol(H,["plataforma de cobro"]);
   const rows=[];
@@ -756,7 +781,10 @@ function parseMPFile(json){
     if(plat)concepto+=` | ${plat}`;
     const tipo=classifyMPMov(tipoOp,medioPago,neto);
     const key=pKey(fecha.getFullYear(),fecha.getMonth()+1);
-    rows.push({fecha,key,ref,causal:"",concepto,importe:neto,saldo:0,tipo,iibb,comision:com});
+    const imps=desagCol>=0?parseMPTaxes(r[desagCol],neto):null;
+    const row={fecha,key,ref,causal:"",concepto,importe:neto,saldo:0,tipo,iibb,comision:com};
+    if(imps)row.imps=imps;
+    rows.push(row);
   }
   return{rows,cuenta:"Mercado Pago",moneda:"ARS",empresa:""};
 }
@@ -825,6 +853,7 @@ const BANK_TAXES=[
   {tipo:"Imp. Déb. Bancarios",label:"Imp. Débitos (Ley 25.413)",computo:"% a cuenta Ganancias"},
   {tipo:"Imp. Créd. Bancarios",label:"Imp. Créditos (Ley 25.413)",computo:"% a cuenta Ganancias"},
   {tipo:"Imp. Sellos",label:"Imp. Sellos",computo:"Gasto"},
+  {tipo:"Otros imp. MP",label:"Otros imp. MP",computo:"Revisar"},
 ];
 const BANK_TAX_SET=new Set(BANK_TAXES.map(t=>t.tipo));
 // Tipo a usar para una acreditación: impuestos (devoluciones) y MP conservan su tipo
@@ -842,7 +871,10 @@ function BancosPanel({client,onUpdate,emitidos}){
     let changed=false;
     const updated=rawMovs.map(m=>{
       // Skip MP movements — they have their own classifier
-      if(m.tipo&&m.tipo.endsWith(" MP"))return m;
+      if(m.tipo&&m.tipo.endsWith(" MP")){
+        if(m.tipo!=="Crédito MP"&&/^CREDIT\b/.test(String(m.concepto||""))){changed=true;return{...m,tipo:"Crédito MP"};}
+        return m;
+      }
       const t=classifyBankMov(m.concepto,m.causal,clientCuit);
       if(t!==m.tipo){changed=true;return{...m,tipo:t};}
       return m;
@@ -867,12 +899,16 @@ function BancosPanel({client,onUpdate,emitidos}){
         loaded++;
         if(loaded===files.length){
           // Deduplicate by ref+fecha+importe
-          const existing=new Set(movs.map(m=>`${m.ref}|${m.key}|${m.importe}`));
-          const fresh=allNew.filter(m=>!existing.has(`${m.ref}|${m.key}|${m.importe}`));
+          const mk=m=>`${m.ref}|${m.key}|${m.importe}`;
+          const existing=new Set(movs.map(mk));
+          const fresh=allNew.filter(m=>!existing.has(mk(m)));
+          // Movimientos MP ya cargados sin desglose de impuestos: completarlo con el archivo nuevo
+          const newByKey=new Map(allNew.filter(m=>m.imps).map(m=>[mk(m),m]));
+          const merged=movs.map(m=>{if(m.imps)return m;const n=newByKey.get(mk(m));return n?{...m,imps:n.imps,tipo:n.tipo}:m;});
           // Serialize dates
           const serialized=fresh.map(m=>({...m,fecha:m.fecha.toISOString()}));
           const meta=res.cuenta?{cuenta:res.cuenta,moneda:res.moneda,empresa:res.empresa}:bancoMeta;
-          onUpdate({...client,bancoMovs:[...movs,...serialized],bancoMeta:meta});
+          onUpdate({...client,bancoMovs:[...merged,...serialized],bancoMeta:meta});
         }
       };
       reader.readAsArrayBuffer(f);
@@ -915,7 +951,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     return[...s].sort();
   },[monthly]);
 
-  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Perc. IVA":"#A5B4FC","Ret. Ganancias":"#F59E0B","Cobro MP":"#22D3EE","Pago MP":"#FB7185","Retiro MP":"#C084FC","Transf. Recibida MP":"#2DD4BF","Transf. Enviada MP":"#E879F9","Otros MP":"#9CA3AF","Otros":"#6B7280"};
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Perc. IVA":"#A5B4FC","Ret. Ganancias":"#F59E0B","Cobro MP":"#22D3EE","Pago MP":"#FB7185","Retiro MP":"#C084FC","Crédito MP":"#60A5FA","Otros imp. MP":"#9CA3AF","Transf. Recibida MP":"#2DD4BF","Transf. Enviada MP":"#E879F9","Otros MP":"#9CA3AF","Otros":"#6B7280"};
 
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
@@ -935,7 +971,10 @@ function BancosPanel({client,onUpdate,emitidos}){
     const out=[];
     parsed.forEach(m=>{
       if(BANK_TAX_SET.has(m.tipo))out.push({fecha:m.fecha,key:m.key,tipo:m.tipo,concepto:m.concepto,monto:-m.importe,origen:m.tipo.endsWith(" MP")?"MP":"Banco"});
-      if(m.tipo&&m.tipo.endsWith(" MP")&&m.iibb)out.push({fecha:m.fecha,key:m.key,tipo:"Ret. IIBB",concepto:`Mercado Pago — ${m.concepto}`,monto:Math.abs(m.iibb),origen:"MP"});
+      if(m.tipo&&m.tipo.endsWith(" MP")){
+        if(m.imps)m.imps.forEach(x=>out.push({fecha:m.fecha,key:m.key,tipo:x.tipo,concepto:`${x.sub} — ${m.concepto}`,monto:x.monto,origen:"MP"}));
+        else if(m.iibb)out.push({fecha:m.fecha,key:m.key,tipo:"Ret. IIBB",concepto:`Total imp. MP (sin desglose — volvé a subir el archivo) — ${m.concepto}`,monto:Math.abs(m.iibb),origen:"MP"});
+      }
     });
     return out;
   },[parsed]);
@@ -961,7 +1000,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     const emMap={};
     (emitidos||[]).forEach(r=>{const s=r.isNC?-1:1;if(!emMap[r.key])emMap[r.key]=0;emMap[r.key]+=r.total*s;});
     const bkMap={};
-    parsed.forEach(m=>{if(m.importe>0&&m.tipo!=="Transf. Propias"&&!BANK_TAX_SET.has(m.tipo)){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
+    parsed.forEach(m=>{if(m.importe>0&&m.tipo!=="Transf. Propias"&&m.tipo!=="Crédito MP"&&!BANK_TAX_SET.has(m.tipo)){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
     const allKeys=[...new Set([...Object.keys(emMap),...Object.keys(bkMap)])].sort();
     return allKeys.map(k=>{const fact=emMap[k]||0;const acred=bkMap[k]||0;const diff=acred-fact;const pct=fact>0?((acred/fact)*100):0;return{key:k,label:pLabel(k),fact,acred,diff,pct};});
   },[emitidos,parsed,movs]);
