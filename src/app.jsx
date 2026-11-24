@@ -1047,21 +1047,21 @@ function BancosPanel({client,onUpdate,emitidos}){
     y+=150;
     x.fillStyle="#555";x.font=F(400,20);x.textAlign="center";
     x.fillText(`Neto de devoluciones · Generado el ${new Date().toLocaleDateString("es-AR")} con FiscalBox`,W/2,H-PAD+10);x.textAlign="left";
-    // Compartir / copiar / descargar
-    const blob=await new Promise(r=>cv.toBlob(r,"image/png"));
-    if(!blob){setShareMsg({key:m.key,text:"No se pudo generar la imagen"});return;}
-    const safe=String(client.name||"cliente").replace(/[^\w\-]+/g,"_").slice(0,40);
-    const fname=`impuestos_${safe}_${m.key}.png`;
-    const file=new File([blob],fname,{type:"image/png"});
-    const caption=`Impuestos retenidos ${pLabel(m.key)} — ${client.name||""}: ${fmt(m.total)}`;
-    const done=t=>{setShareMsg({key:m.key,text:t});setTimeout(()=>setShareMsg(null),4000);};
+    // Copiar al portapapeles (para pegar en WhatsApp con Ctrl+V). El ClipboardItem se crea
+    // dentro del clic con la promesa del PNG, así funciona también en Safari.
+    const blobP=new Promise(r=>cv.toBlob(r,"image/png"));
+    const done=t=>{setShareMsg({key:m.key,text:t});setTimeout(()=>setShareMsg(null),3500);};
     try{
-      if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:caption,text:caption});done("Compartido ✓");return;}
-    }catch(e){if(e&&e.name==="AbortError")return;}
-    let copied=false;
-    try{if(window.ClipboardItem&&navigator.clipboard?.write){await navigator.clipboard.write([new ClipboardItem({"image/png":blob})]);copied=true;}}catch(e){}
-    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=fname;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
-    done(copied?"Imagen copiada y descargada — pegala en WhatsApp con Ctrl+V":"Imagen descargada — adjuntala en WhatsApp");
+      if(!window.ClipboardItem||!navigator.clipboard?.write)throw new Error("sin portapapeles");
+      await navigator.clipboard.write([new ClipboardItem({"image/png":blobP})]);
+      done("Imagen copiada ✓ — pegala en WhatsApp");
+    }catch(e){
+      // Respaldo: si el navegador no deja copiar imágenes, se descarga
+      const blob=await blobP;if(!blob){done("No se pudo generar la imagen");return;}
+      const safe=String(client.name||"cliente").replace(/[^\w\-]+/g,"_").slice(0,40);
+      const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`impuestos_${safe}_${m.key}.png`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+      done("Tu navegador no permite copiar imágenes: se descargó");
+    }
   };
   const copyTax=(id,val)=>{const txt=val.toFixed(2).replace(".",",");navigator.clipboard.writeText(txt).then(()=>{setTaxCopied(id);setTimeout(()=>setTaxCopied(""),1500);});};
 
@@ -1159,7 +1159,7 @@ function BancosPanel({client,onUpdate,emitidos}){
           <th style={{padding:"7px 8px",textAlign:"left",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>Período</th>
           {taxCols.map(t=>(<th key={t.tipo} style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}><div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:TIPO_COLORS[t.tipo]||"#666"}}></div>{t.label}</div><div style={{fontSize:9,color:"#555",textTransform:"none",marginTop:2}}>{t.computo}</div></th>))}
           <th style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>Total</th>
-          <th style={{padding:"7px 8px",textAlign:"center",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>Compartir</th>
+          <th style={{padding:"7px 8px",textAlign:"center",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>WhatsApp</th>
         </tr></thead>
         <tbody>{taxMonthly.map(m=>(<tr key={m.key} style={{borderBottom:"1px solid #1a1a30"}}>
           <td style={{padding:"7px 8px",fontWeight:600,cursor:"pointer"}} onClick={()=>setTaxDet(taxDet&&taxDet.key===m.key&&!taxDet.tipo?null:{key:m.key,tipo:null})}>{m.label}</td>
@@ -1169,7 +1169,7 @@ function BancosPanel({client,onUpdate,emitidos}){
           </td>);})}
           <td style={{padding:"7px 8px",textAlign:"right",fontWeight:700,color:"#FBBF24",fontVariantNumeric:"tabular-nums"}}>{fmt(m.total)}</td>
           <td style={{padding:"5px 8px",textAlign:"center",whiteSpace:"nowrap"}}>
-            <button onClick={()=>shareTaxImage(m)} title="Generar imagen del resumen para WhatsApp" style={{background:"#25D36622",color:"#25D366",border:"1px solid #25D36644",borderRadius:4,padding:"3px 10px",fontSize:10,fontWeight:600,cursor:"pointer"}}>📲 WhatsApp</button>
+            <button onClick={()=>shareTaxImage(m)} title="Copiar imagen del resumen para pegar en WhatsApp" style={{background:"#25D36622",color:"#25D366",border:"1px solid #25D36644",borderRadius:4,padding:"3px 10px",fontSize:10,fontWeight:600,cursor:"pointer"}}>📋 Copiar imagen</button>
             {shareMsg&&shareMsg.key===m.key&&<div style={{fontSize:10,color:"#4ADE80",marginTop:3,whiteSpace:"normal",maxWidth:180}}>{shareMsg.text}</div>}
           </td>
         </tr>))}
