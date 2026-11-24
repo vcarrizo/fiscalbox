@@ -692,13 +692,20 @@ function classifyBankMov(concepto,causal,clientCuit){
   if(c.includes("CHEQUE P/CAMARA")||c.includes("CHEQUE CANJE"))return"Cheques";
   if(c.includes("COMISION CHQ")||c.includes("COMISION CHEQUE"))return"Comisiones Cheques";
   if(c.includes("MANTENIMIENTO")||c.includes("PAQUETE"))return"Mantenimiento Cuenta";
-  if(c.includes("AFIP")||c.includes("IMP. AFIP")||ca==="23"||ca==="3696")return"AFIP";
-  if(c.includes("RET ING BRUTOS")||c.includes("IIBB"))return"Ret. IIBB";
-  if(c.includes("SELLOS"))return"Imp. Sellos";
+  // Impuestos retenidos / percibidos por el banco (antes que AFIP y transferencias)
   if(c.includes("DBCR")&&c.includes("S/DB"))return"Imp. Déb. Bancarios";
   if(c.includes("DBCR")&&c.includes("S/CR"))return"Imp. Créd. Bancarios";
+  if(/25\.?413|IMP\.? ?DEB|IMP\.? ?CRED|IMPUESTO (AL |S\/ ?)?(DEBITO|CREDITO)/.test(c)){
+    if(/CRED|S\/CR/.test(c)&&!/DEB|S\/DB/.test(c))return"Imp. Créd. Bancarios";
+    return"Imp. Déb. Bancarios";
+  }
+  if(c.includes("RET ING BRUTOS")||c.includes("IIBB")||c.includes("SIRCREB")||c.includes("SIRTAC")||/ING(\.|RESOS)? ?BRUTOS/.test(c))return"Ret. IIBB";
+  if(c.includes("DEBITO FISCAL IVA")||/IVA (BASICO|S\/ ?COM|SOBRE COM)/.test(c))return"IVA Bancario";
+  if(/PERC(EP)?(CION|\.)? ?(DE )?IVA|RG ?2408|RET(ENCION|\.)? ?(DE )?IVA/.test(c))return"Perc. IVA";
+  if(/GANANCIA/.test(c)&&/RET|PERC|IMP/.test(c))return"Ret. Ganancias";
+  if(c.includes("SELLOS"))return"Imp. Sellos";
+  if(c.includes("AFIP")||c.includes("IMP. AFIP")||ca==="23"||ca==="3696")return"AFIP";
   if(c.includes("INTER.ADEL"))return"Intereses Deudores";
-  if(c.includes("DEBITO FISCAL IVA"))return"IVA Bancario";
   if(c.includes("ING TRANSF")||c.includes("TRANSF ")&&!c.includes("TRANSF:")||ca==="4543"||ca==="4544"||ca==="493"||ca==="4397"||ca==="4333"||ca==="4334"||c.startsWith("NUMERO DE OPERACION")||c.match(/^\d+.*NUMERO DE OPERACION/i)){
     if(clientCuit){const cuitClean=clientCuit.replace(/[-\s]/g,"");if(c.includes(cuitClean))return"Transf. Propias";}
     return"Transf. Terceros";
@@ -809,6 +816,23 @@ function parseBankFile(data){
   return{rows,cuenta,moneda,empresa};
 }
 
+// Impuestos que el banco retiene/percibe — se muestran separados en la sección Bancos
+const BANK_TAXES=[
+  {tipo:"Ret. IIBB",label:"Ret. IIBB (SIRCREB)",computo:"Pago a cuenta IIBB"},
+  {tipo:"Perc. IVA",label:"Perc./Ret. IVA",computo:"Computable en DDJJ IVA"},
+  {tipo:"IVA Bancario",label:"IVA s/ gastos bancarios",computo:"Crédito fiscal IVA"},
+  {tipo:"Ret. Ganancias",label:"Ret./Perc. Ganancias",computo:"Pago a cuenta Ganancias"},
+  {tipo:"Imp. Déb. Bancarios",label:"Imp. Débitos (Ley 25.413)",computo:"% a cuenta Ganancias"},
+  {tipo:"Imp. Créd. Bancarios",label:"Imp. Créditos (Ley 25.413)",computo:"% a cuenta Ganancias"},
+  {tipo:"Imp. Sellos",label:"Imp. Sellos",computo:"Gasto"},
+];
+const BANK_TAX_SET=new Set(BANK_TAXES.map(t=>t.tipo));
+// Tipo a usar para una acreditación: impuestos (devoluciones) y MP conservan su tipo
+function acredTipo(m){
+  if(m.tipo&&(m.tipo.endsWith(" MP")||BANK_TAX_SET.has(m.tipo)))return m.tipo;
+  return m.tipo==="Transf. Propias"?"Transf. Propias":"Transf. Terceros";
+}
+
 function BancosPanel({client,onUpdate,emitidos}){
   const rawMovs=client.bancoMovs||[];
   const bancoMeta=client.bancoMeta||{};
@@ -871,7 +895,7 @@ function BancosPanel({client,onUpdate,emitidos}){
       if(m.importe>0){
         p.acred+=m.importe;
         // MP movements keep their own tipo; bank acreditaciones → Propias/Terceros
-        const ta=m.tipo&&m.tipo.endsWith(" MP")?m.tipo:(m.tipo==="Transf. Propias"?"Transf. Propias":"Transf. Terceros");
+        const ta=acredTipo(m);
         if(!p.byTipoAcred[ta])p.byTipoAcred[ta]=0;
         p.byTipoAcred[ta]+=m.importe;
       }else{
@@ -891,7 +915,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     return[...s].sort();
   },[monthly]);
 
-  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Cobro MP":"#22D3EE","Pago MP":"#FB7185","Retiro MP":"#C084FC","Transf. Recibida MP":"#2DD4BF","Transf. Enviada MP":"#E879F9","Otros MP":"#9CA3AF","Otros":"#6B7280"};
+  const TIPO_COLORS={"Cheques":"#F87171","AFIP":"#FB923C","Ret. IIBB":"#FBBF24","Transferencias Enviadas":"#A78BFA","Comisiones Cheques":"#F472B6","Mantenimiento Cuenta":"#94A3B8","Imp. Déb. Bancarios":"#EF4444","Imp. Créd. Bancarios":"#34D399","Intereses Deudores":"#EF4444","IVA Bancario":"#818CF8","Transf. Propias":"#4ADE80","Transf. Terceros":"#38BDF8","Imp. Sellos":"#D97706","Perc. IVA":"#A5B4FC","Ret. Ganancias":"#F59E0B","Cobro MP":"#22D3EE","Pago MP":"#FB7185","Retiro MP":"#C084FC","Transf. Recibida MP":"#2DD4BF","Transf. Enviada MP":"#E879F9","Otros MP":"#9CA3AF","Otros":"#6B7280"};
 
   const detRows=useMemo(()=>{
     if(!detPeriod)return[];
@@ -899,11 +923,35 @@ function BancosPanel({client,onUpdate,emitidos}){
     if(detSide==="acred")rows=rows.filter(m=>m.importe>0);
     else if(detSide==="sal")rows=rows.filter(m=>m.importe<0);
     if(detTipo){
-      if(detSide==="acred"&&detTipo==="Transf. Terceros")rows=rows.filter(m=>m.tipo!=="Transf. Propias");
+      if(detSide==="acred")rows=rows.filter(m=>acredTipo(m)===detTipo);
       else rows=rows.filter(m=>m.tipo===detTipo);
     }
     return rows.sort((a,b)=>b.fecha-a.fecha);
   },[parsed,detPeriod,detTipo,detSide]);
+
+  // Impuestos bancarios por período (neto de devoluciones). MP: retenciones IIBB informadas por operación
+  const[taxDet,setTaxDet]=useState(null); // {key,tipo}
+  const taxRows=useMemo(()=>{
+    const out=[];
+    parsed.forEach(m=>{
+      if(BANK_TAX_SET.has(m.tipo))out.push({fecha:m.fecha,key:m.key,tipo:m.tipo,concepto:m.concepto,monto:-m.importe,origen:m.tipo.endsWith(" MP")?"MP":"Banco"});
+      if(m.tipo&&m.tipo.endsWith(" MP")&&m.iibb)out.push({fecha:m.fecha,key:m.key,tipo:"Ret. IIBB",concepto:`Mercado Pago — ${m.concepto}`,monto:Math.abs(m.iibb),origen:"MP"});
+    });
+    return out;
+  },[parsed]);
+  const taxMonthly=useMemo(()=>{
+    const map={};
+    taxRows.forEach(r=>{if(!map[r.key])map[r.key]={total:0};map[r.key][r.tipo]=(map[r.key][r.tipo]||0)+r.monto;map[r.key].total+=r.monto;});
+    return Object.entries(map).sort(([a],[b])=>a.localeCompare(b)).map(([key,v])=>({key,label:pLabel(key),...v}));
+  },[taxRows]);
+  const taxCols=useMemo(()=>BANK_TAXES.filter(t=>taxRows.some(r=>r.tipo===t.tipo)),[taxRows]);
+  const taxTotals=useMemo(()=>{const t={total:0};taxMonthly.forEach(m=>{taxCols.forEach(c=>{t[c.tipo]=(t[c.tipo]||0)+(m[c.tipo]||0);});t.total+=m.total;});return t;},[taxMonthly,taxCols]);
+  const taxDetRows=useMemo(()=>{
+    if(!taxDet)return[];
+    return taxRows.filter(r=>(!taxDet.key||r.key===taxDet.key)&&(!taxDet.tipo||r.tipo===taxDet.tipo)).sort((a,b)=>b.fecha-a.fecha);
+  },[taxRows,taxDet]);
+  const[taxCopied,setTaxCopied]=useState("");
+  const copyTax=(id,val)=>{const txt=val.toFixed(2).replace(".",",");navigator.clipboard.writeText(txt).then(()=>{setTaxCopied(id);setTimeout(()=>setTaxCopied(""),1500);});};
 
   const totals=useMemo(()=>monthly.reduce((a,m)=>({acred:a.acred+m.acred,salidas:a.salidas+m.salidas,count:a.count+m.count}),{acred:0,salidas:0,count:0}),[monthly]);
 
@@ -913,7 +961,7 @@ function BancosPanel({client,onUpdate,emitidos}){
     const emMap={};
     (emitidos||[]).forEach(r=>{const s=r.isNC?-1:1;if(!emMap[r.key])emMap[r.key]=0;emMap[r.key]+=r.total*s;});
     const bkMap={};
-    parsed.forEach(m=>{if(m.importe>0&&m.tipo!=="Transf. Propias"){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
+    parsed.forEach(m=>{if(m.importe>0&&m.tipo!=="Transf. Propias"&&!BANK_TAX_SET.has(m.tipo)){if(!bkMap[m.key])bkMap[m.key]=0;bkMap[m.key]+=m.importe;}});
     const allKeys=[...new Set([...Object.keys(emMap),...Object.keys(bkMap)])].sort();
     return allKeys.map(k=>{const fact=emMap[k]||0;const acred=bkMap[k]||0;const diff=acred-fact;const pct=fact>0?((acred/fact)*100):0;return{key:k,label:pLabel(k),fact,acred,diff,pct};});
   },[emitidos,parsed,movs]);
@@ -931,8 +979,8 @@ function BancosPanel({client,onUpdate,emitidos}){
     </div>
 
     {movs.length>0&&(<>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:20}} className="grid-3">
-        {[{label:"Acreditaciones",value:totals.acred,color:"#4ADE80"},{label:"Salidas",value:totals.salidas,color:"#F87171"},{label:"Movimientos",value:totals.count,color:"#6C9CFF",isCnt:true}].map((c,i)=>(<div key={i} style={{background:"#12122a",borderRadius:10,padding:"14px",borderLeft:`3px solid ${c.color}`}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}} className="grid-3">
+        {[{label:"Acreditaciones",value:totals.acred,color:"#4ADE80"},{label:"Salidas",value:totals.salidas,color:"#F87171"},{label:"Impuestos bancarios",value:taxTotals.total,color:"#FBBF24"},{label:"Movimientos",value:totals.count,color:"#6C9CFF",isCnt:true}].map((c,i)=>(<div key={i} style={{background:"#12122a",borderRadius:10,padding:"14px",borderLeft:`3px solid ${c.color}`}}>
           <div style={{fontSize:10,color:"#777",textTransform:"uppercase",letterSpacing:1,marginBottom:5}}>{c.label}</div>
           <div style={{fontSize:18,fontWeight:700,color:c.color,fontVariantNumeric:"tabular-nums"}}>{c.isCnt?c.value:fmt(c.value)}</div></div>))}
       </div>
@@ -989,6 +1037,46 @@ function BancosPanel({client,onUpdate,emitidos}){
         </div>)}
       </div>)}
     </>)}
+
+    {/* Impuestos retenidos / percibidos en cuenta */}
+    {taxCols.length>0&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
+      <div style={{padding:"12px 16px 4px",fontSize:13,fontWeight:600}}>🧾 Impuestos retenidos y percibidos en cuenta</div>
+      <div style={{padding:"0 16px 10px",fontSize:11,color:"#777"}}>Neto de devoluciones. Hacé clic en un importe para ver los movimientos; en ⧉ para copiarlo.</div>
+      <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:Math.max(600,140+taxCols.length*130)}}>
+        <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>
+          <th style={{padding:"7px 8px",textAlign:"left",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>Período</th>
+          {taxCols.map(t=>(<th key={t.tipo} style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}><div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:TIPO_COLORS[t.tipo]||"#666"}}></div>{t.label}</div><div style={{fontSize:9,color:"#555",textTransform:"none",marginTop:2}}>{t.computo}</div></th>))}
+          <th style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>Total</th>
+        </tr></thead>
+        <tbody>{taxMonthly.map(m=>(<tr key={m.key} style={{borderBottom:"1px solid #1a1a30"}}>
+          <td style={{padding:"7px 8px",fontWeight:600,cursor:"pointer"}} onClick={()=>setTaxDet(taxDet&&taxDet.key===m.key&&!taxDet.tipo?null:{key:m.key,tipo:null})}>{m.label}</td>
+          {taxCols.map(t=>{const v=m[t.tipo]||0;const id=m.key+t.tipo;const sel=taxDet&&taxDet.key===m.key&&taxDet.tipo===t.tipo;return(<td key={t.tipo} style={{padding:"7px 8px",textAlign:"right",fontVariantNumeric:"tabular-nums",background:sel?"#1e1e40":"transparent",whiteSpace:"nowrap"}}>
+            {v!==0?(<><span onClick={()=>setTaxDet(sel?null:{key:m.key,tipo:t.tipo})} style={{cursor:"pointer",color:v<0?"#4ADE80":"#ddd"}}>{fmt(v)}</span>
+              <button onClick={()=>copyTax(id,v)} title="Copiar importe" style={{marginLeft:5,background:"none",border:"none",cursor:"pointer",fontSize:11,color:taxCopied===id?"#4ADE80":"#555",padding:0}}>{taxCopied===id?"✓":"⧉"}</button></>):<span style={{color:"#333"}}>—</span>}
+          </td>);})}
+          <td style={{padding:"7px 8px",textAlign:"right",fontWeight:700,color:"#FBBF24",fontVariantNumeric:"tabular-nums"}}>{fmt(m.total)}</td>
+        </tr>))}
+        <tr style={{borderTop:"2px solid #333"}}>
+          <td style={{padding:"8px",fontWeight:700}}>TOTALES</td>
+          {taxCols.map(t=>(<td key={t.tipo} onClick={()=>setTaxDet(taxDet&&!taxDet.key&&taxDet.tipo===t.tipo?null:{key:null,tipo:t.tipo})} style={{padding:"8px",textAlign:"right",fontWeight:700,fontVariantNumeric:"tabular-nums",cursor:"pointer"}}>{fmt(taxTotals[t.tipo]||0)}</td>))}
+          <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#FBBF24",fontVariantNumeric:"tabular-nums"}}>{fmt(taxTotals.total)}</td>
+        </tr></tbody></table></div>
+      {taxDet&&(<div style={{borderTop:"1px solid #2a2a40",padding:"12px 16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:12,fontWeight:600,color:"#888"}}>Detalle: {taxDet.tipo?(BANK_TAXES.find(t=>t.tipo===taxDet.tipo)?.label):"Todos los impuestos"} — {taxDet.key?pLabel(taxDet.key):"Todos los períodos"} ({taxDetRows.length} mov.)</div>
+          <button onClick={()=>setTaxDet(null)} style={{background:"none",border:"none",color:"#777",cursor:"pointer",fontSize:18,lineHeight:1}}>×</button>
+        </div>
+        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:560}}>
+          <thead><tr style={{borderBottom:"1px solid #2a2a40"}}>{["Fecha","Impuesto","Concepto","Origen","Importe"].map(h=>(<th key={h} style={{padding:"5px 8px",textAlign:h==="Concepto"||h==="Impuesto"?"left":"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>{h}</th>))}</tr></thead>
+          <tbody>{taxDetRows.map((r,i)=>(<tr key={i} style={{borderBottom:"1px solid #1a1a30"}}>
+            <td style={{padding:"5px 8px",textAlign:"right",color:"#777",whiteSpace:"nowrap"}}>{r.fecha.toLocaleDateString("es-AR")}</td>
+            <td style={{padding:"5px 8px",whiteSpace:"nowrap"}}>{BANK_TAXES.find(t=>t.tipo===r.tipo)?.label||r.tipo}</td>
+            <td style={{padding:"5px 8px",maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.concepto}</td>
+            <td style={{padding:"5px 8px",textAlign:"right",color:"#777"}}>{r.origen}</td>
+            <td style={{padding:"5px 8px",textAlign:"right",fontVariantNumeric:"tabular-nums",fontWeight:600,color:r.monto<0?"#4ADE80":"#F87171"}}>{fmt(r.monto)}</td>
+          </tr>))}</tbody></table></div>
+      </div>)}
+    </div>)}
 
     {/* Cruce facturación vs acreditaciones */}
     {cruceData.length>0&&(<div style={{background:"#12122a",borderRadius:10,overflow:"hidden",marginBottom:20}}>
