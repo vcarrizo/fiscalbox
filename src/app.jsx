@@ -794,8 +794,9 @@ function parseBankFile(data){
   const json=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
   // Detect Mercado Pago format
   if(json.length>0){
-    const first=String(json[0][0]||"").toLowerCase();
-    if(first.includes("id de operaci"))return parseMPFile(json);
+    // MP: "ID de operación" puede no ser la primera columna (reporte de liquidaciones arranca con "FECHA DE ORIGEN")
+    const hdr=(json[0]||[]).map(x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""));
+    if(hdr.some(h=>h.includes("id de operacion"))&&hdr.some(h=>h.includes("monto neto")))return parseMPFile(json);
   }
   // Find header row (contains "Fecha" and ("Importe" or "Concepto"))
   let hi=-1;
@@ -846,7 +847,7 @@ function parseBankFile(data){
 
 // Impuestos que el banco retiene/percibe — se muestran separados en la sección Bancos
 const BANK_TAXES=[
-  {tipo:"Ret. IIBB",label:"Ret. IIBB (SIRCREB)",computo:"Pago a cuenta IIBB"},
+  {tipo:"Ret. IIBB",label:"Ret. IIBB",computo:"Pago a cuenta IIBB"},
   {tipo:"Perc. IVA",label:"Perc./Ret. IVA",computo:"Computable en DDJJ IVA"},
   {tipo:"IVA Bancario",label:"IVA s/ gastos bancarios",computo:"Crédito fiscal IVA"},
   {tipo:"Ret. Ganancias",label:"Ret./Perc. Ganancias",computo:"Pago a cuenta Ganancias"},
@@ -970,10 +971,10 @@ function BancosPanel({client,onUpdate,emitidos}){
   const taxRows=useMemo(()=>{
     const out=[];
     parsed.forEach(m=>{
-      if(BANK_TAX_SET.has(m.tipo))out.push({fecha:m.fecha,key:m.key,tipo:m.tipo,concepto:m.concepto,monto:-m.importe,origen:m.tipo.endsWith(" MP")?"MP":"Banco"});
+      if(BANK_TAX_SET.has(m.tipo))out.push({fecha:m.fecha,key:m.key,tipo:m.tipo,concepto:m.concepto,monto:-m.importe,origen:"Banco",sub:m.tipo==="Ret. IIBB"?"SIRCREB (banco)":"Banco"});
       if(m.tipo&&m.tipo.endsWith(" MP")){
-        if(m.imps)m.imps.forEach(x=>out.push({fecha:m.fecha,key:m.key,tipo:x.tipo,concepto:`${x.sub} — ${m.concepto}`,monto:x.monto,origen:"MP"}));
-        else if(m.iibb)out.push({fecha:m.fecha,key:m.key,tipo:"Ret. IIBB",concepto:`Total imp. MP (sin desglose — volvé a subir el archivo) — ${m.concepto}`,monto:Math.abs(m.iibb),origen:"MP"});
+        if(m.imps)m.imps.forEach(x=>out.push({fecha:m.fecha,key:m.key,tipo:x.tipo,concepto:`${x.sub} — ${m.concepto}`,monto:x.monto,origen:"MP",sub:`${x.sub} (MP)`}));
+        else if(m.iibb)out.push({fecha:m.fecha,key:m.key,tipo:"Ret. IIBB",concepto:`Total imp. MP (sin desglose — volvé a subir el archivo) — ${m.concepto}`,monto:Math.abs(m.iibb),origen:"MP",sub:"Mercado Pago (sin desglose)"});
       }
     });
     return out;
@@ -990,6 +991,78 @@ function BancosPanel({client,onUpdate,emitidos}){
     return taxRows.filter(r=>(!taxDet.key||r.key===taxDet.key)&&(!taxDet.tipo||r.tipo===taxDet.tipo)).sort((a,b)=>b.fecha-a.fecha);
   },[taxRows,taxDet]);
   const[taxCopied,setTaxCopied]=useState("");
+  const[shareMsg,setShareMsg]=useState(null); // {key,text}
+  // Genera un PNG con el resumen de impuestos de un período, para compartir por WhatsApp
+  const shareTaxImage=async(m)=>{
+    const W=1080,PAD=64,sc=1;
+    const lines=[];
+    taxCols.forEach(t=>{
+      const v=m[t.tipo]||0;if(!v)return;
+      const subs={};taxRows.filter(r=>r.key===m.key&&r.tipo===t.tipo).forEach(r=>{subs[r.sub||""]=(subs[r.sub||""]||0)+r.monto;});
+      const subList=Object.entries(subs).filter(([,x])=>Math.abs(x)>=0.005);
+      lines.push({t,v,subs:subList.length>1||t.tipo==="Ret. IIBB"?subList.sort(([,a],[,b])=>b-a):[]});
+    });
+    const H=PAD+120+150+lines.reduce((h,l)=>h+96+l.subs.length*46,0)+150+90;
+    const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+    const x=cv.getContext("2d");
+    const F=(w,sz)=>`${w} ${sz}px -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
+    const rr=(X,Y,w,h,r)=>{x.beginPath();x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath();};
+    x.fillStyle="#0b0b18";x.fillRect(0,0,W,H);
+    // Encabezado con logo
+    let y=PAD;
+    x.fillStyle="#6C9CFF26";rr(PAD,y,64,64,14);x.fill();x.strokeStyle="#6C9CFF";x.lineWidth=3;x.stroke();
+    x.fillStyle="#6C9CFF";rr(PAD+13,y+13,19,19,3);x.fill();x.fillStyle="#4ADE80";rr(PAD+36,y+13,15,8,2);x.fill();
+    x.globalAlpha=.5;rr(PAD+36,y+25,15,8,2);x.fill();x.globalAlpha=.4;x.fillStyle="#6C9CFF";rr(PAD+13,y+37,38,6,2);x.fill();x.globalAlpha=1;
+    x.fillStyle="#fff";x.font=F(700,34);x.textBaseline="middle";x.fillText("FiscalBox",PAD+84,y+22);
+    x.fillStyle="#888";x.font=F(400,24);x.fillText("Impuestos retenidos en cuenta",PAD+84,y+52);
+    y+=120;
+    // Cliente y período
+    x.fillStyle="#12122a";rr(PAD,y,W-PAD*2,120,18);x.fill();
+    x.fillStyle="#fff";x.font=F(700,36);x.textBaseline="alphabetic";
+    let nm=String(client.name||"");while(nm.length>4&&x.measureText(nm).width>W-PAD*2-360)nm=nm.slice(0,-2);if(nm!==String(client.name||""))nm=nm.trim()+"…";
+    x.fillText(nm,PAD+32,y+56);
+    if(client.cuit){x.fillStyle="#888";x.font=F(400,24);x.fillText(`CUIT ${client.cuit}`,PAD+32,y+94);}
+    x.textAlign="right";x.fillStyle="#FBBF24";x.font=F(700,38);x.fillText(pLabel(m.key),W-PAD-32,y+72);x.textAlign="left";
+    y+=150;
+    // Líneas de impuestos
+    lines.forEach((l,i)=>{
+      x.fillStyle=TIPO_COLORS[l.t.tipo]||"#666";rr(PAD+8,y+14,18,18,4);x.fill();
+      x.fillStyle="#eee";x.font=F(600,30);x.fillText(l.t.label,PAD+44,y+32);
+      x.fillStyle="#777";x.font=F(400,21);x.fillText(l.t.computo,PAD+44,y+64);
+      x.textAlign="right";x.fillStyle=l.v<0?"#4ADE80":"#fff";x.font=F(700,32);x.fillText(fmt(l.v),W-PAD-8,y+34);x.textAlign="left";
+      y+=88;
+      l.subs.forEach(([sub,v])=>{
+        x.fillStyle="#999";x.font=F(400,24);x.fillText(`• ${sub}`,PAD+64,y+22);
+        x.textAlign="right";x.fillStyle="#aaa";x.font=F(500,25);x.fillText(fmt(v),W-PAD-8,y+22);x.textAlign="left";
+        y+=46;
+      });
+      if(i<lines.length-1){x.fillStyle="#22223a";x.fillRect(PAD,y-4,W-PAD*2,2);}
+      y+=8;
+    });
+    // Total
+    y+=24;
+    x.fillStyle="#FBBF2418";rr(PAD,y,W-PAD*2,100,18);x.fill();x.strokeStyle="#FBBF2466";x.lineWidth=2;x.stroke();
+    x.fillStyle="#FBBF24";x.font=F(700,32);x.fillText("TOTAL RETENIDO",PAD+32,y+62);
+    x.textAlign="right";x.font=F(800,40);x.fillText(fmt(m.total),W-PAD-32,y+64);x.textAlign="left";
+    y+=150;
+    x.fillStyle="#555";x.font=F(400,20);x.textAlign="center";
+    x.fillText(`Neto de devoluciones · Generado el ${new Date().toLocaleDateString("es-AR")} con FiscalBox`,W/2,H-PAD+10);x.textAlign="left";
+    // Compartir / copiar / descargar
+    const blob=await new Promise(r=>cv.toBlob(r,"image/png"));
+    if(!blob){setShareMsg({key:m.key,text:"No se pudo generar la imagen"});return;}
+    const safe=String(client.name||"cliente").replace(/[^\w\-]+/g,"_").slice(0,40);
+    const fname=`impuestos_${safe}_${m.key}.png`;
+    const file=new File([blob],fname,{type:"image/png"});
+    const caption=`Impuestos retenidos ${pLabel(m.key)} — ${client.name||""}: ${fmt(m.total)}`;
+    const done=t=>{setShareMsg({key:m.key,text:t});setTimeout(()=>setShareMsg(null),4000);};
+    try{
+      if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:caption,text:caption});done("Compartido ✓");return;}
+    }catch(e){if(e&&e.name==="AbortError")return;}
+    let copied=false;
+    try{if(window.ClipboardItem&&navigator.clipboard?.write){await navigator.clipboard.write([new ClipboardItem({"image/png":blob})]);copied=true;}}catch(e){}
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=fname;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+    done(copied?"Imagen copiada y descargada — pegala en WhatsApp con Ctrl+V":"Imagen descargada — adjuntala en WhatsApp");
+  };
   const copyTax=(id,val)=>{const txt=val.toFixed(2).replace(".",",");navigator.clipboard.writeText(txt).then(()=>{setTaxCopied(id);setTimeout(()=>setTaxCopied(""),1500);});};
 
   const totals=useMemo(()=>monthly.reduce((a,m)=>({acred:a.acred+m.acred,salidas:a.salidas+m.salidas,count:a.count+m.count}),{acred:0,salidas:0,count:0}),[monthly]);
@@ -1086,6 +1159,7 @@ function BancosPanel({client,onUpdate,emitidos}){
           <th style={{padding:"7px 8px",textAlign:"left",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase"}}>Período</th>
           {taxCols.map(t=>(<th key={t.tipo} style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}><div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:TIPO_COLORS[t.tipo]||"#666"}}></div>{t.label}</div><div style={{fontSize:9,color:"#555",textTransform:"none",marginTop:2}}>{t.computo}</div></th>))}
           <th style={{padding:"7px 8px",textAlign:"right",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>Total</th>
+          <th style={{padding:"7px 8px",textAlign:"center",color:"#666",fontWeight:500,fontSize:10,textTransform:"uppercase",whiteSpace:"nowrap"}}>Compartir</th>
         </tr></thead>
         <tbody>{taxMonthly.map(m=>(<tr key={m.key} style={{borderBottom:"1px solid #1a1a30"}}>
           <td style={{padding:"7px 8px",fontWeight:600,cursor:"pointer"}} onClick={()=>setTaxDet(taxDet&&taxDet.key===m.key&&!taxDet.tipo?null:{key:m.key,tipo:null})}>{m.label}</td>
@@ -1094,11 +1168,16 @@ function BancosPanel({client,onUpdate,emitidos}){
               <button onClick={()=>copyTax(id,v)} title="Copiar importe" style={{marginLeft:5,background:"none",border:"none",cursor:"pointer",fontSize:11,color:taxCopied===id?"#4ADE80":"#555",padding:0}}>{taxCopied===id?"✓":"⧉"}</button></>):<span style={{color:"#333"}}>—</span>}
           </td>);})}
           <td style={{padding:"7px 8px",textAlign:"right",fontWeight:700,color:"#FBBF24",fontVariantNumeric:"tabular-nums"}}>{fmt(m.total)}</td>
+          <td style={{padding:"5px 8px",textAlign:"center",whiteSpace:"nowrap"}}>
+            <button onClick={()=>shareTaxImage(m)} title="Generar imagen del resumen para WhatsApp" style={{background:"#25D36622",color:"#25D366",border:"1px solid #25D36644",borderRadius:4,padding:"3px 10px",fontSize:10,fontWeight:600,cursor:"pointer"}}>📲 WhatsApp</button>
+            {shareMsg&&shareMsg.key===m.key&&<div style={{fontSize:10,color:"#4ADE80",marginTop:3,whiteSpace:"normal",maxWidth:180}}>{shareMsg.text}</div>}
+          </td>
         </tr>))}
         <tr style={{borderTop:"2px solid #333"}}>
           <td style={{padding:"8px",fontWeight:700}}>TOTALES</td>
           {taxCols.map(t=>(<td key={t.tipo} onClick={()=>setTaxDet(taxDet&&!taxDet.key&&taxDet.tipo===t.tipo?null:{key:null,tipo:t.tipo})} style={{padding:"8px",textAlign:"right",fontWeight:700,fontVariantNumeric:"tabular-nums",cursor:"pointer"}}>{fmt(taxTotals[t.tipo]||0)}</td>))}
           <td style={{padding:"8px",textAlign:"right",fontWeight:700,color:"#FBBF24",fontVariantNumeric:"tabular-nums"}}>{fmt(taxTotals.total)}</td>
+          <td></td>
         </tr></tbody></table></div>
       {taxDet&&(<div style={{borderTop:"1px solid #2a2a40",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
